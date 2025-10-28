@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_min.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\dev\Powershell\fftfree\build\_deps\eigen-src\doc\snippets\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{8164E201-B47A-30A0-BAB5-FB1CD3C4740F}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

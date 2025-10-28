@@ -1,0 +1,222 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{04ABB6BB-7BB9-36B3-9F2B-031E5CC49BBD}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>eigensolver_selfadjoint</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\dev\Powershell\fftfree\build\_deps\eigen-src\test\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/test/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/test/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakePushCheckState.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFortranFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFile.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLanguage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckStructHasMember.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindBoost.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindQt4.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\MacroAddFileDependencies.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\EigenSmokeTestList.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindBLAS.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindCHOLMOD.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindHWLOC.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindKLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindLAPACK.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindPASTIX.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSPQR.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSuperLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindUMFPACK.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/test/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/test/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakePushCheckState.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFortranFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFile.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLanguage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckStructHasMember.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindBoost.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindQt4.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\MacroAddFileDependencies.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\EigenSmokeTestList.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindBLAS.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindCHOLMOD.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindHWLOC.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindKLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindLAPACK.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindPASTIX.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSPQR.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSuperLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindUMFPACK.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/test/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/test/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakePushCheckState.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFortranFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFile.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLanguage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckStructHasMember.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindBoost.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindQt4.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\MacroAddFileDependencies.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\EigenSmokeTestList.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindBLAS.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindCHOLMOD.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindHWLOC.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindKLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindLAPACK.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindPASTIX.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSPQR.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSuperLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindUMFPACK.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/test/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/test/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakePushCheckState.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFortranFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFile.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLanguage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckStructHasMember.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindBoost.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindQt4.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\MacroAddFileDependencies.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\EigenSmokeTestList.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindBLAS.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindCHOLMOD.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindHWLOC.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindKLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindLAPACK.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindPASTIX.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSPQR.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSuperLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindUMFPACK.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\ZERO_CHECK.vcxproj">
+      <Project>{F1692406-D616-33CE-9BA8-DFD59FE9A503}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_1.vcxproj">
+      <Project>{DD8EE4BE-CB06-3BD7-899C-D8F0DBBEE566}</Project>
+      <Name>eigensolver_selfadjoint_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_12.vcxproj">
+      <Project>{5C79C84A-AC39-3A98-B065-8665543FDE30}</Project>
+      <Name>eigensolver_selfadjoint_12</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_13.vcxproj">
+      <Project>{0169ABC9-D03B-34CB-8B19-462CA4F5E8AD}</Project>
+      <Name>eigensolver_selfadjoint_13</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_2.vcxproj">
+      <Project>{C0A2C11E-6B83-3D1D-B757-DC799B007FA4}</Project>
+      <Name>eigensolver_selfadjoint_2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_3.vcxproj">
+      <Project>{CA8612E9-52BE-3E0D-AA79-871DFDFFF354}</Project>
+      <Name>eigensolver_selfadjoint_3</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_4.vcxproj">
+      <Project>{5C115043-1568-3A6F-8C97-1F557B3FA637}</Project>
+      <Name>eigensolver_selfadjoint_4</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_5.vcxproj">
+      <Project>{A04EA64F-E24F-332F-BFDA-B28C8FBA5622}</Project>
+      <Name>eigensolver_selfadjoint_5</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_6.vcxproj">
+      <Project>{41E93125-9D6F-3598-A533-D221FFBAE876}</Project>
+      <Name>eigensolver_selfadjoint_6</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_7.vcxproj">
+      <Project>{B1A57724-0549-3969-9D63-E15F5CB08B86}</Project>
+      <Name>eigensolver_selfadjoint_7</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_8.vcxproj">
+      <Project>{82C6D437-C431-349D-A11D-2FA6C5000167}</Project>
+      <Name>eigensolver_selfadjoint_8</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_9.vcxproj">
+      <Project>{90293464-E79E-386A-A090-65329E406C55}</Project>
+      <Name>eigensolver_selfadjoint_9</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

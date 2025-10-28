@@ -1,0 +1,604 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{F43BDEAF-F951-39A6-9E44-CC7570474AB2}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>buildsmoketests</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\dev\Powershell\fftfree\build\_deps\eigen-src\test\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/test/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/test/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakePushCheckState.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFortranFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFile.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLanguage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckStructHasMember.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindBoost.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindQt4.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\MacroAddFileDependencies.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\EigenSmokeTestList.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindBLAS.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindCHOLMOD.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindHWLOC.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindKLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindLAPACK.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindPASTIX.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSPQR.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSuperLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindUMFPACK.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/test/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/test/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakePushCheckState.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFortranFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFile.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLanguage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckStructHasMember.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindBoost.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindQt4.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\MacroAddFileDependencies.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\EigenSmokeTestList.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindBLAS.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindCHOLMOD.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindHWLOC.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindKLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindLAPACK.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindPASTIX.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSPQR.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSuperLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindUMFPACK.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/test/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/test/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakePushCheckState.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFortranFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFile.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLanguage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckStructHasMember.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindBoost.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindQt4.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\MacroAddFileDependencies.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\EigenSmokeTestList.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindBLAS.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindCHOLMOD.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindHWLOC.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindKLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindLAPACK.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindPASTIX.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSPQR.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSuperLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindUMFPACK.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/test/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/test/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\Program Files\CMake\share\cmake-4.1\Modules\CMakeFindDependencyMacro.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CMakePushCheckState.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckCXXSymbolExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFortranFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckFunctionExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckIncludeFile.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLanguage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckLibraryExists.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\CheckStructHasMember.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindBoost.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageHandleStandardArgs.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPackageMessage.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindPkgConfig.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindQt4.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\FindThreads.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\Internal\CheckSourceCompiles.cmake;C:\Program Files\CMake\share\cmake-4.1\Modules\MacroAddFileDependencies.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\EigenSmokeTestList.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindBLAS.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindCHOLMOD.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindHWLOC.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindKLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindLAPACK.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindPASTIX.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSPQR.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindSuperLU.cmake;C:\dev\Powershell\fftfree\build\_deps\eigen-src\cmake\FindUMFPACK.cmake;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\ZERO_CHECK.vcxproj">
+      <Project>{F1692406-D616-33CE-9BA8-DFD59FE9A503}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\adjoint_1.vcxproj">
+      <Project>{4CFF2EB5-7221-3895-B273-005535048A86}</Project>
+      <Name>adjoint_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\array_cwise_7.vcxproj">
+      <Project>{ACE29808-A8EF-313D-9496-6E1790D6962A}</Project>
+      <Name>array_cwise_7</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\array_cwise_8.vcxproj">
+      <Project>{B9398AF9-501B-3E05-8C5C-EC3736042B72}</Project>
+      <Name>array_cwise_8</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\array_for_matrix_1.vcxproj">
+      <Project>{4C2E02E8-FB8B-338D-A4B1-FFD14E8D7D7A}</Project>
+      <Name>array_for_matrix_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\array_of_string.vcxproj">
+      <Project>{C8AEB5FE-5578-3D08-A66D-DF95BFD15326}</Project>
+      <Name>array_of_string</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\array_replicate_1.vcxproj">
+      <Project>{E0C3CBAB-A0BE-39A7-B521-2E1FA660EC8F}</Project>
+      <Name>array_replicate_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\array_reverse_1.vcxproj">
+      <Project>{9AE97DDB-D2AB-38B1-81F8-C7D909026DAF}</Project>
+      <Name>array_reverse_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\bandmatrix.vcxproj">
+      <Project>{1977E0C1-0BC0-3A99-A26D-67F1DDD7A908}</Project>
+      <Name>bandmatrix</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\bdcsvd_9.vcxproj">
+      <Project>{6552EF74-B5D5-3ECD-B525-E631C73338A9}</Project>
+      <Name>bdcsvd_9</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\bfloat16_float.vcxproj">
+      <Project>{00BD09C0-050B-3EA8-A1DA-9EC836C9FE74}</Project>
+      <Name>bfloat16_float</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\blasutil_1.vcxproj">
+      <Project>{18D7926D-537E-3624-9398-D3F8394171F2}</Project>
+      <Name>blasutil_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\block_5.vcxproj">
+      <Project>{F0B33087-2959-359A-A8E3-218D2C768CBA}</Project>
+      <Name>block_5</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\cholesky_1.vcxproj">
+      <Project>{D204C63C-9790-313C-AD19-D90E41567EDA}</Project>
+      <Name>cholesky_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\conservative_resize_1.vcxproj">
+      <Project>{87827A32-CFB2-33F9-AEAC-A20AE1FA6FF2}</Project>
+      <Name>conservative_resize_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\constructor_1.vcxproj">
+      <Project>{08E40EBA-804D-326D-B4F5-DA3B07954FE2}</Project>
+      <Name>constructor_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\corners_1.vcxproj">
+      <Project>{BF2F672D-BD1E-3AEB-88E1-081587FE4805}</Project>
+      <Name>corners_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\dense_storage.vcxproj">
+      <Project>{349A5DBA-28DC-3A46-9812-8792005BCE93}</Project>
+      <Name>dense_storage</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\determinant_1.vcxproj">
+      <Project>{383F83D5-3249-3EDE-AC59-3DE68436EC42}</Project>
+      <Name>determinant_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\diagonal_1.vcxproj">
+      <Project>{8C18BD4B-DD24-30FE-A230-9698282AE4F2}</Project>
+      <Name>diagonal_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\diagonal_2.vcxproj">
+      <Project>{2EA2D7DF-20C0-389C-9421-752F8CC4CDFA}</Project>
+      <Name>diagonal_2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\diagonalmatrices_1.vcxproj">
+      <Project>{6FF323C8-3CCE-3170-9797-970B31187DDD}</Project>
+      <Name>diagonalmatrices_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\dynalloc.vcxproj">
+      <Project>{39D73F7A-8E1F-3820-97BA-2FD7CF05465E}</Project>
+      <Name>dynalloc</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_complex_1.vcxproj">
+      <Project>{AE9EAA33-433B-39AA-AB2E-AD3F7C582923}</Project>
+      <Name>eigensolver_complex_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\eigensolver_selfadjoint_8.vcxproj">
+      <Project>{82C6D437-C431-349D-A11D-2FA6C5000167}</Project>
+      <Name>eigensolver_selfadjoint_8</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\exceptions.vcxproj">
+      <Project>{A610E60E-9678-3A75-9226-E23BA1DDF1FF}</Project>
+      <Name>exceptions</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\fastmath.vcxproj">
+      <Project>{4D4B4FFC-DAC1-3778-923D-1090B11DBFA8}</Project>
+      <Name>fastmath</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\first_aligned.vcxproj">
+      <Project>{FFB88DAF-9685-3B94-AE6A-6C9BE1209E9B}</Project>
+      <Name>first_aligned</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\geo_alignedbox_2.vcxproj">
+      <Project>{1D85BFD0-208C-388C-B443-2E6A3E63A219}</Project>
+      <Name>geo_alignedbox_2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\geo_eulerangles_1.vcxproj">
+      <Project>{9AF21167-8048-3D22-9169-BEA418A4B6AB}</Project>
+      <Name>geo_eulerangles_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\geo_homogeneous_1.vcxproj">
+      <Project>{29D7F47F-8311-3214-9B62-BA94EB7396AB}</Project>
+      <Name>geo_homogeneous_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\geo_hyperplane_1.vcxproj">
+      <Project>{C001B8D1-49D3-329C-981E-7AECDF5D9900}</Project>
+      <Name>geo_hyperplane_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\geo_orthomethods_1.vcxproj">
+      <Project>{BFC7844A-CF47-3A1F-8573-9D6FB49D8518}</Project>
+      <Name>geo_orthomethods_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\geo_parametrizedline_1.vcxproj">
+      <Project>{49A84639-DF53-3A94-80D6-37BFDF3D3790}</Project>
+      <Name>geo_parametrizedline_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\geo_transformations_7.vcxproj">
+      <Project>{BC72F32E-593B-341C-9262-64F5B5F51248}</Project>
+      <Name>geo_transformations_7</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\half_float.vcxproj">
+      <Project>{E7D286E4-30EA-3FE4-861F-F98CAB950B12}</Project>
+      <Name>half_float</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\hessenberg_1.vcxproj">
+      <Project>{5E172B5B-753D-306B-AD44-259D4205C4C3}</Project>
+      <Name>hessenberg_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\householder_8.vcxproj">
+      <Project>{F8DDF837-F0FA-3BBE-B21B-CF7972745F08}</Project>
+      <Name>householder_8</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\indexed_view_1.vcxproj">
+      <Project>{EF856E9F-9F80-3AE5-A82B-E0C7732973C9}</Project>
+      <Name>indexed_view_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\inplace_decomposition_1.vcxproj">
+      <Project>{0BC8C12D-D91C-39B1-83C7-4BE9E810A390}</Project>
+      <Name>inplace_decomposition_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\integer_types_1.vcxproj">
+      <Project>{FB68F7AC-E6AC-38CA-824C-61ECBA3C3A76}</Project>
+      <Name>integer_types_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\inverse_1.vcxproj">
+      <Project>{D8A12165-431D-3E39-853F-18BD870FC613}</Project>
+      <Name>inverse_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\is_same_dense.vcxproj">
+      <Project>{0D410E9B-0A14-37AC-AA4C-D019E33968AA}</Project>
+      <Name>is_same_dense</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\jacobi_1.vcxproj">
+      <Project>{9565D3D7-A84B-3847-AD38-820A9708B05A}</Project>
+      <Name>jacobi_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\jacobisvd_1.vcxproj">
+      <Project>{8290E279-D829-30CD-A114-60208359290C}</Project>
+      <Name>jacobisvd_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\linearstructure_1.vcxproj">
+      <Project>{E7150277-7E35-356A-8241-CDC7321134DC}</Project>
+      <Name>linearstructure_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\mapped_matrix_1.vcxproj">
+      <Project>{EE6339CE-F7DF-3714-86FB-553BA5BADD4A}</Project>
+      <Name>mapped_matrix_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\mapstaticmethods_1.vcxproj">
+      <Project>{EB0C603B-CF1B-3995-9BFB-81E84CFFE3E9}</Project>
+      <Name>mapstaticmethods_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\mapstride_1.vcxproj">
+      <Project>{9499F625-17A4-3FD7-A346-BD49CA308D84}</Project>
+      <Name>mapstride_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\meta.vcxproj">
+      <Project>{39EACCBA-456C-3A90-BF81-AFFDF51AC6C7}</Project>
+      <Name>meta</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\miscmatrices_1.vcxproj">
+      <Project>{463FF5A6-D03E-3E45-BFCB-C7A8D5CF361E}</Project>
+      <Name>miscmatrices_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\mixingtypes_7.vcxproj">
+      <Project>{5BB9F02A-31C4-3739-8856-773E65AFE89F}</Project>
+      <Name>mixingtypes_7</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\nestbyvalue.vcxproj">
+      <Project>{E3039CF3-A86F-3E7F-9593-86935DB8194B}</Project>
+      <Name>nestbyvalue</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\nesting_ops_1.vcxproj">
+      <Project>{4BFA7DF7-C065-38E3-9CBF-249E02FDA39E}</Project>
+      <Name>nesting_ops_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\nomalloc_1.vcxproj">
+      <Project>{4ADEBB4D-8592-38F6-9A0A-EE0A08BC5E10}</Project>
+      <Name>nomalloc_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\nullary_1.vcxproj">
+      <Project>{E71373C8-41A7-3C99-A19C-A357B4661F94}</Project>
+      <Name>nullary_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\num_dimensions.vcxproj">
+      <Project>{E584FFDC-39B2-308F-97CA-C41693D9B141}</Project>
+      <Name>num_dimensions</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\numext.vcxproj">
+      <Project>{6BD183D4-349D-317A-8404-1692D164EC4F}</Project>
+      <Name>numext</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\packetmath.vcxproj">
+      <Project>{0D49E83F-5AE2-3739-BC5E-B56E3F0A1FE5}</Project>
+      <Name>packetmath</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\permutationmatrices_1.vcxproj">
+      <Project>{F28DC63F-9863-3B2B-83A2-E9E0C65A1A84}</Project>
+      <Name>permutationmatrices_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\prec_inverse_4x4_1.vcxproj">
+      <Project>{FD3E0ABC-0934-34A4-9212-F87E8E5173A0}</Project>
+      <Name>prec_inverse_4x4_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\product_extra_5.vcxproj">
+      <Project>{51A229BA-6CC4-36CF-AFFE-725ECB4C74BF}</Project>
+      <Name>product_extra_5</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\product_selfadjoint_1.vcxproj">
+      <Project>{47BA8F2D-E559-3F14-9528-246015B8A39A}</Project>
+      <Name>product_selfadjoint_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\product_small_7.vcxproj">
+      <Project>{9B620F4F-E2E3-382D-9DF7-F2F65F7C1616}</Project>
+      <Name>product_small_7</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\product_symm_1.vcxproj">
+      <Project>{C19607ED-4BE8-3DA5-8869-29FF5A5B37B9}</Project>
+      <Name>product_symm_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\product_syrk_1.vcxproj">
+      <Project>{82936F45-6EF5-3CC8-BB2D-574236983A4F}</Project>
+      <Name>product_syrk_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\product_trmm_1.vcxproj">
+      <Project>{55B6A712-B09B-36E9-AEDE-E8F1922AF54B}</Project>
+      <Name>product_trmm_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\product_trmv_1.vcxproj">
+      <Project>{49BD7FB3-F8DD-3056-B16A-9832FA08AC5D}</Project>
+      <Name>product_trmv_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\product_trsolve_5.vcxproj">
+      <Project>{E8DBC482-EA93-38D9-9946-A7F10C2928F7}</Project>
+      <Name>product_trsolve_5</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\qr_1.vcxproj">
+      <Project>{1AD2E337-3137-30E0-8636-BB8782E9B848}</Project>
+      <Name>qr_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\qr_colpivoting_7.vcxproj">
+      <Project>{7204C76A-5EA9-3A33-9EFD-31B484519BE5}</Project>
+      <Name>qr_colpivoting_7</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\qr_fullpivoting_4.vcxproj">
+      <Project>{2255F6D7-4B13-3673-8C1F-BE229E64001C}</Project>
+      <Name>qr_fullpivoting_4</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\rand.vcxproj">
+      <Project>{D321D21E-B91D-3167-ACA0-26E023C6D100}</Project>
+      <Name>rand</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\real_qz_1.vcxproj">
+      <Project>{3ED974C7-DA03-3670-A363-5817CA984BD1}</Project>
+      <Name>real_qz_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\redux_1.vcxproj">
+      <Project>{745F6C3F-3C4B-3CC4-B491-CE2CFFA97E68}</Project>
+      <Name>redux_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\ref_1.vcxproj">
+      <Project>{F71A5C03-5D33-3595-BC5C-768094957412}</Project>
+      <Name>ref_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\resize.vcxproj">
+      <Project>{777FB16C-DF4C-36DB-AE54-61EA5A6BB5B0}</Project>
+      <Name>resize</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\rvalue_types_1.vcxproj">
+      <Project>{459C2385-6353-33C9-9F0B-B35B615DD0DF}</Project>
+      <Name>rvalue_types_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\schur_complex_1.vcxproj">
+      <Project>{3D4B9997-89F8-32AB-99D9-89EDD23C453E}</Project>
+      <Name>schur_complex_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\schur_real_1.vcxproj">
+      <Project>{078E1676-29CA-3A50-B8EB-F7094E01C245}</Project>
+      <Name>schur_real_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\selfadjoint_1.vcxproj">
+      <Project>{986B77E0-7EA6-3D35-9C3F-97C4D089D780}</Project>
+      <Name>selfadjoint_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\sizeof.vcxproj">
+      <Project>{90896051-CB9D-3930-B075-F4EF374DE204}</Project>
+      <Name>sizeof</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\sizeoverflow.vcxproj">
+      <Project>{3AECD9C0-595E-3264-8D1D-B4FD7B8C518D}</Project>
+      <Name>sizeoverflow</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\smallvectors.vcxproj">
+      <Project>{025884E3-08F8-361B-B946-C94A7A8F4567}</Project>
+      <Name>smallvectors</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\sparse_basic_3.vcxproj">
+      <Project>{C03C9C15-A106-371D-9FF0-C22719214B94}</Project>
+      <Name>sparse_basic_3</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\sparse_block_1.vcxproj">
+      <Project>{6F9E79FF-557A-3C44-9A08-5548EB3FAD7F}</Project>
+      <Name>sparse_block_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\sparse_permutations_2.vcxproj">
+      <Project>{68F897F1-3CBB-34D8-AE06-0250CAA7E345}</Project>
+      <Name>sparse_permutations_2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\sparse_product_4.vcxproj">
+      <Project>{7124E80B-F7CC-3BF6-AC09-8B41FCA325AB}</Project>
+      <Name>sparse_product_4</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\sparse_ref_1.vcxproj">
+      <Project>{DDB1A5FE-72D7-372F-B8A3-472145FFADF7}</Project>
+      <Name>sparse_ref_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\sparse_solvers_1.vcxproj">
+      <Project>{7EB7C457-DD50-3793-8ED0-BFA866F0031C}</Project>
+      <Name>sparse_solvers_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\sparse_vector_1.vcxproj">
+      <Project>{2E90C5A4-9D4B-30F8-96F0-58F55ABBB366}</Project>
+      <Name>sparse_vector_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\special_numbers_1.vcxproj">
+      <Project>{B8632D51-5108-3FEC-8666-334587A7BE24}</Project>
+      <Name>special_numbers_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\stable_norm_1.vcxproj">
+      <Project>{87842C1E-A42E-3040-B4F2-43D62A658605}</Project>
+      <Name>stable_norm_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\stddeque_1.vcxproj">
+      <Project>{461541D9-536B-3E5A-BF04-0E2CDC2BA424}</Project>
+      <Name>stddeque_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\stddeque_overload_1.vcxproj">
+      <Project>{97EBA637-B32A-3A08-A7F5-8638E6F3F555}</Project>
+      <Name>stddeque_overload_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\stdlist_1.vcxproj">
+      <Project>{F4FC3C67-CE50-36C6-A582-45754AA5C467}</Project>
+      <Name>stdlist_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\stdlist_overload_1.vcxproj">
+      <Project>{349E2A45-6F0F-3759-B284-FB790C647C08}</Project>
+      <Name>stdlist_overload_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\stdvector_1.vcxproj">
+      <Project>{CCAC0BF8-D311-3F56-B86E-68779339AE0C}</Project>
+      <Name>stdvector_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\stdvector_overload_1.vcxproj">
+      <Project>{191E1969-D15C-3DBE-97CB-70D171C408E9}</Project>
+      <Name>stdvector_overload_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\stl_iterators_1.vcxproj">
+      <Project>{709A5D03-3432-375E-A39E-3B90C9292BF9}</Project>
+      <Name>stl_iterators_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\swap_1.vcxproj">
+      <Project>{515EBE26-3241-301D-AA1F-1E811FD4C30C}</Project>
+      <Name>swap_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\symbolic_index_1.vcxproj">
+      <Project>{65F0CEFA-90F6-3857-9FB0-2C4340E0EF9D}</Project>
+      <Name>symbolic_index_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\triangular_1.vcxproj">
+      <Project>{2B7F8C6E-35B7-30B5-B256-674A5AE215AF}</Project>
+      <Name>triangular_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\umeyama_3.vcxproj">
+      <Project>{AEB188BD-9B62-330C-9E8B-8EA97B165BFE}</Project>
+      <Name>umeyama_3</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\unalignedcount.vcxproj">
+      <Project>{B2FA432B-C649-33C1-9209-A3437EB32657}</Project>
+      <Name>unalignedcount</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\vectorwiseop_1.vcxproj">
+      <Project>{0D469DA1-59DD-3847-8F2C-A39244342696}</Project>
+      <Name>vectorwiseop_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\test\visitor_1.vcxproj">
+      <Project>{5E65A299-9E02-3EF2-9ABE-C8A88A56F23C}</Project>
+      <Name>visitor_1</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

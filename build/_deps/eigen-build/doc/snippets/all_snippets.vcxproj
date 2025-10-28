@@ -1,0 +1,1306 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MinSizeRel|x64">
+      <Configuration>MinSizeRel</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="RelWithDebInfo|x64">
+      <Configuration>RelWithDebInfo</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{11407719-9D6C-3507-9FAD-683AE3608B85}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform>x64</Platform>
+    <ProjectName>all_snippets</ProjectName>
+    <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'" Label="Configuration">
+    <ConfigurationType>Utility</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
+    <Midl>
+      <AdditionalIncludeDirectories>C:\dev\Powershell\fftfree\build\_deps\eigen-src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
+      <HeaderFileName>%(Filename).h</HeaderFileName>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+      <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
+      <ProxyFileName>%(Filename)_p.c</ProxyFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\dev\Powershell\fftfree\build\_deps\eigen-src\doc\snippets\CMakeLists.txt">
+      <UseUtf8Encoding>Always</UseUtf8Encoding>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/doc/snippets/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/doc/snippets/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-src\doc\snippets\compile_snippet.cpp.in;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/doc/snippets/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/doc/snippets/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-src\doc\snippets\compile_snippet.cpp.in;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/doc/snippets/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/doc/snippets/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-src\doc\snippets\compile_snippet.cpp.in;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule C:/dev/Powershell/fftfree/build/_deps/eigen-src/doc/snippets/CMakeLists.txt</Message>
+      <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/dev/Powershell/fftfree -BC:/dev/Powershell/fftfree/build --check-stamp-file C:/dev/Powershell/fftfree/build/_deps/eigen-build/doc/snippets/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+      <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-src\doc\snippets\compile_snippet.cpp.in;%(AdditionalInputs)</AdditionalInputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\CMakeFiles\generate.stamp</Outputs>
+      <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\ZERO_CHECK.vcxproj">
+      <Project>{F1692406-D616-33CE-9BA8-DFD59FE9A503}</Project>
+      <Name>ZERO_CHECK</Name>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_AngleAxis_mimic_euler.vcxproj">
+      <Project>{386B5FF6-9D57-3B92-9554-8959D44CD924}</Project>
+      <Name>compile_AngleAxis_mimic_euler</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_BiCGSTAB_simple.vcxproj">
+      <Project>{76BB60A3-AF7C-3C1F-9F96-2B833D1D42B8}</Project>
+      <Name>compile_BiCGSTAB_simple</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_BiCGSTAB_step_by_step.vcxproj">
+      <Project>{56ADF3BB-38AE-3C6A-A4C7-761F8465C536}</Project>
+      <Name>compile_BiCGSTAB_step_by_step</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_ColPivHouseholderQR_solve.vcxproj">
+      <Project>{6CF2E025-2739-3D03-8699-F18F042EE376}</Project>
+      <Name>compile_ColPivHouseholderQR_solve</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_ComplexEigenSolver_compute.vcxproj">
+      <Project>{840499C7-79AF-32B5-ADC0-AF2C88C8DD44}</Project>
+      <Name>compile_ComplexEigenSolver_compute</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_ComplexEigenSolver_eigenvalues.vcxproj">
+      <Project>{E8185DD1-3F1D-3CD5-9167-B9E8D73A602C}</Project>
+      <Name>compile_ComplexEigenSolver_eigenvalues</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_ComplexEigenSolver_eigenvectors.vcxproj">
+      <Project>{97538BE5-FED0-30F7-95AD-4F5067B0B233}</Project>
+      <Name>compile_ComplexEigenSolver_eigenvectors</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_ComplexSchur_compute.vcxproj">
+      <Project>{576EDCA4-1394-357A-AE2E-19CFDE2DBB7B}</Project>
+      <Name>compile_ComplexSchur_compute</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_ComplexSchur_matrixT.vcxproj">
+      <Project>{BC8AB2BB-93EC-3AC2-9DD4-E25C2D4C33D2}</Project>
+      <Name>compile_ComplexSchur_matrixT</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_ComplexSchur_matrixU.vcxproj">
+      <Project>{331B6486-E07E-3881-BAC8-A885B569EFC1}</Project>
+      <Name>compile_ComplexSchur_matrixU</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_abs.vcxproj">
+      <Project>{6A149EA6-AFED-3188-9EE0-7142C0C6A8BF}</Project>
+      <Name>compile_Cwise_abs</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_abs2.vcxproj">
+      <Project>{DF6CA032-D686-3E98-B389-25618620A0CC}</Project>
+      <Name>compile_Cwise_abs2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_acos.vcxproj">
+      <Project>{EE0CDD97-F595-38CD-99B6-4AA36BFFE542}</Project>
+      <Name>compile_Cwise_acos</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_arg.vcxproj">
+      <Project>{2FDA1EE1-197A-3D52-96F9-D834B5D61DA6}</Project>
+      <Name>compile_Cwise_arg</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_array_power_array.vcxproj">
+      <Project>{E2D8DE52-E642-3699-8796-747B77CDD186}</Project>
+      <Name>compile_Cwise_array_power_array</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_asin.vcxproj">
+      <Project>{DE8D3290-A8F9-3BC9-984E-DD7669DD6231}</Project>
+      <Name>compile_Cwise_asin</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_atan.vcxproj">
+      <Project>{5FDE4876-DD4F-38B4-9AE6-BC5D7AB59D27}</Project>
+      <Name>compile_Cwise_atan</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_boolean_and.vcxproj">
+      <Project>{8CDFEFD4-0FDC-3EF9-972B-6F3B631D710A}</Project>
+      <Name>compile_Cwise_boolean_and</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_boolean_not.vcxproj">
+      <Project>{2EE3D95F-4BED-3EFF-835B-A9B4B92823B0}</Project>
+      <Name>compile_Cwise_boolean_not</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_boolean_or.vcxproj">
+      <Project>{D4E3BFCA-CF92-3291-B501-BE3F83CE6166}</Project>
+      <Name>compile_Cwise_boolean_or</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_boolean_xor.vcxproj">
+      <Project>{A2467A2D-A71A-3E51-95ED-933317BDCCAD}</Project>
+      <Name>compile_Cwise_boolean_xor</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_ceil.vcxproj">
+      <Project>{44D2C3D7-FB00-3DC7-8D40-28F7C4E94908}</Project>
+      <Name>compile_Cwise_ceil</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_cos.vcxproj">
+      <Project>{2CCFB135-FA86-34B5-90EE-853728EA070E}</Project>
+      <Name>compile_Cwise_cos</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_cosh.vcxproj">
+      <Project>{43890063-FDB7-3F50-B7F6-5B0D0404E154}</Project>
+      <Name>compile_Cwise_cosh</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_cube.vcxproj">
+      <Project>{F0D35683-3391-3A2A-BDB3-AAD3699DFA4E}</Project>
+      <Name>compile_Cwise_cube</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_equal_equal.vcxproj">
+      <Project>{D11BA355-2454-36AF-83CC-3A0CDA70ED03}</Project>
+      <Name>compile_Cwise_equal_equal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_exp.vcxproj">
+      <Project>{83A929C1-B1ED-337C-9D35-2B616372D11F}</Project>
+      <Name>compile_Cwise_exp</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_floor.vcxproj">
+      <Project>{8AD29BB5-251A-3722-B7FB-C322D5C14F87}</Project>
+      <Name>compile_Cwise_floor</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_greater.vcxproj">
+      <Project>{C22822DB-1660-3756-B6F3-25154ED9A62F}</Project>
+      <Name>compile_Cwise_greater</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_greater_equal.vcxproj">
+      <Project>{DE6D24BE-EE08-3DAC-B09C-AFCD2EE07EB1}</Project>
+      <Name>compile_Cwise_greater_equal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_inverse.vcxproj">
+      <Project>{CAC46A75-CDD3-3374-8A03-CFA5E509A9D3}</Project>
+      <Name>compile_Cwise_inverse</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_isFinite.vcxproj">
+      <Project>{F93BCB71-866F-3C82-941F-CF8E88A65AC4}</Project>
+      <Name>compile_Cwise_isFinite</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_isInf.vcxproj">
+      <Project>{CBF7BF36-6A7A-3C57-B767-09196B02DC50}</Project>
+      <Name>compile_Cwise_isInf</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_isNaN.vcxproj">
+      <Project>{97744004-05FA-3532-8E2E-E2E2DAE25CDD}</Project>
+      <Name>compile_Cwise_isNaN</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_less.vcxproj">
+      <Project>{E850C9D8-223E-346D-A22E-7873B9C5CF4A}</Project>
+      <Name>compile_Cwise_less</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_less_equal.vcxproj">
+      <Project>{C5EB1D38-F0A7-3B76-A102-215319490E66}</Project>
+      <Name>compile_Cwise_less_equal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_log.vcxproj">
+      <Project>{21A4C406-319E-3DD8-A108-D07DE7D880DA}</Project>
+      <Name>compile_Cwise_log</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_log10.vcxproj">
+      <Project>{3B54BBB4-57E9-36DA-B9E0-4BB5477DC059}</Project>
+      <Name>compile_Cwise_log10</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_max.vcxproj">
+      <Project>{F615F600-269F-3AAF-A1EC-2761F8D74EC5}</Project>
+      <Name>compile_Cwise_max</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_min.vcxproj">
+      <Project>{B0B1877E-EC3C-3BF7-B279-A3C912091779}</Project>
+      <Name>compile_Cwise_min</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_minus.vcxproj">
+      <Project>{E06FD195-B431-3DE2-AC0E-E6514583996F}</Project>
+      <Name>compile_Cwise_minus</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_minus_equal.vcxproj">
+      <Project>{82877DC9-75CD-32AC-842F-E6746932B75B}</Project>
+      <Name>compile_Cwise_minus_equal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_not_equal.vcxproj">
+      <Project>{97450BDA-009A-3C5E-90C1-A3E838285F0A}</Project>
+      <Name>compile_Cwise_not_equal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_plus.vcxproj">
+      <Project>{2939529C-05CE-3C61-8330-ED7A1E4CAFE5}</Project>
+      <Name>compile_Cwise_plus</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_plus_equal.vcxproj">
+      <Project>{16FBF9D9-3FD8-3433-8471-4D31BD562C0F}</Project>
+      <Name>compile_Cwise_plus_equal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_pow.vcxproj">
+      <Project>{79D47677-D4BE-3A80-ADC5-0F75BBB01431}</Project>
+      <Name>compile_Cwise_pow</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_product.vcxproj">
+      <Project>{1ED08848-7F27-31AC-9CE6-98260293B83E}</Project>
+      <Name>compile_Cwise_product</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_quotient.vcxproj">
+      <Project>{D5D95FBD-C873-3A7A-A3C1-31FD248A936E}</Project>
+      <Name>compile_Cwise_quotient</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_rint.vcxproj">
+      <Project>{0A5063B1-0275-3E65-A1EC-4FC1630450D6}</Project>
+      <Name>compile_Cwise_rint</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_round.vcxproj">
+      <Project>{B3E0686C-FB6E-3210-9FCB-B257CAF42095}</Project>
+      <Name>compile_Cwise_round</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_scalar_power_array.vcxproj">
+      <Project>{E8827395-C780-3670-A922-2192C32D77A1}</Project>
+      <Name>compile_Cwise_scalar_power_array</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_sign.vcxproj">
+      <Project>{FEF2971C-7057-3997-B938-5B158780A30B}</Project>
+      <Name>compile_Cwise_sign</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_sin.vcxproj">
+      <Project>{A41C1FF1-3763-30DC-8B2B-D898E0BA707E}</Project>
+      <Name>compile_Cwise_sin</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_sinh.vcxproj">
+      <Project>{1F37D573-75E2-3148-BF77-1951D9760D35}</Project>
+      <Name>compile_Cwise_sinh</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_slash_equal.vcxproj">
+      <Project>{E32289C8-106B-39C0-9FD7-9AD62DB5F739}</Project>
+      <Name>compile_Cwise_slash_equal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_sqrt.vcxproj">
+      <Project>{E98A9936-AA31-3558-9023-FE404CCB43AE}</Project>
+      <Name>compile_Cwise_sqrt</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_square.vcxproj">
+      <Project>{217F84B2-33D9-3DFE-8014-8D483B85F7F6}</Project>
+      <Name>compile_Cwise_square</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_tan.vcxproj">
+      <Project>{55D3D38D-BB59-32C9-8B08-3570A6E2711D}</Project>
+      <Name>compile_Cwise_tan</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_tanh.vcxproj">
+      <Project>{DE24A2F6-0C37-304F-AFCC-D3732167DB06}</Project>
+      <Name>compile_Cwise_tanh</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Cwise_times_equal.vcxproj">
+      <Project>{B875C1BB-49AC-32DE-BB35-ECB0C3A93F54}</Project>
+      <Name>compile_Cwise_times_equal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_DenseBase_LinSpaced.vcxproj">
+      <Project>{B6D7C882-9FE9-3125-ADBE-B73594D02B29}</Project>
+      <Name>compile_DenseBase_LinSpaced</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_DenseBase_LinSpacedInt.vcxproj">
+      <Project>{A28CAC50-8C49-3402-9D11-70EA7B22C3F0}</Project>
+      <Name>compile_DenseBase_LinSpacedInt</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_DenseBase_LinSpaced_seq_deprecated.vcxproj">
+      <Project>{B83A1D0B-3F05-327D-99C7-90C9DAC77C00}</Project>
+      <Name>compile_DenseBase_LinSpaced_seq_deprecated</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_DenseBase_setLinSpaced.vcxproj">
+      <Project>{BB38401B-914B-35A1-A0C4-111FBD9C72B5}</Project>
+      <Name>compile_DenseBase_setLinSpaced</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_DirectionWise_hnormalized.vcxproj">
+      <Project>{494E4B5C-D79C-3B7E-A58F-DA6627443036}</Project>
+      <Name>compile_DirectionWise_hnormalized</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_DirectionWise_replicate.vcxproj">
+      <Project>{0621F82C-2086-3CFC-9583-71E695A7CEA2}</Project>
+      <Name>compile_DirectionWise_replicate</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_DirectionWise_replicate_int.vcxproj">
+      <Project>{B9F6AAD7-768A-308A-B73C-756E3FB43E0E}</Project>
+      <Name>compile_DirectionWise_replicate_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_EigenSolver_EigenSolver_MatrixType.vcxproj">
+      <Project>{79A359DB-C1DC-3B0A-B228-E55B24910380}</Project>
+      <Name>compile_EigenSolver_EigenSolver_MatrixType</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_EigenSolver_compute.vcxproj">
+      <Project>{9AA4171D-B9DB-3DB5-9623-7E47FDF1ACF9}</Project>
+      <Name>compile_EigenSolver_compute</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_EigenSolver_eigenvalues.vcxproj">
+      <Project>{F533F943-B3DB-3149-B1F9-6646C050A6A0}</Project>
+      <Name>compile_EigenSolver_eigenvalues</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_EigenSolver_eigenvectors.vcxproj">
+      <Project>{8655ADFD-3990-384F-BA5C-22D3E46F8DFE}</Project>
+      <Name>compile_EigenSolver_eigenvectors</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_EigenSolver_pseudoEigenvectors.vcxproj">
+      <Project>{6231F33D-8B35-3C39-B0C2-DB665E0ADAD8}</Project>
+      <Name>compile_EigenSolver_pseudoEigenvectors</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_FullPivHouseholderQR_solve.vcxproj">
+      <Project>{75F949B7-2966-344C-94DB-712A75EA9771}</Project>
+      <Name>compile_FullPivHouseholderQR_solve</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_FullPivLU_image.vcxproj">
+      <Project>{65A56C6E-3EE5-3C0A-A5E7-6563B4ABEEB4}</Project>
+      <Name>compile_FullPivLU_image</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_FullPivLU_kernel.vcxproj">
+      <Project>{85BA8367-D28B-3C92-A521-714969F075F1}</Project>
+      <Name>compile_FullPivLU_kernel</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_FullPivLU_solve.vcxproj">
+      <Project>{531195E3-48F6-335A-BB18-F485DBE8EF2D}</Project>
+      <Name>compile_FullPivLU_solve</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_GeneralizedEigenSolver.vcxproj">
+      <Project>{97B72C0F-337F-3B4E-8A24-CDE771ECC418}</Project>
+      <Name>compile_GeneralizedEigenSolver</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_HessenbergDecomposition_compute.vcxproj">
+      <Project>{52C61C29-5086-3864-AD64-4B5633C68612}</Project>
+      <Name>compile_HessenbergDecomposition_compute</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_HessenbergDecomposition_matrixH.vcxproj">
+      <Project>{F9C724D9-57E3-34A2-B8A4-B394DA8F20DD}</Project>
+      <Name>compile_HessenbergDecomposition_matrixH</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_HessenbergDecomposition_packedMatrix.vcxproj">
+      <Project>{33ECF8D8-E159-3F67-B592-B610AFECAEDC}</Project>
+      <Name>compile_HessenbergDecomposition_packedMatrix</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_HouseholderQR_householderQ.vcxproj">
+      <Project>{5F97D9E9-35CA-38F1-B665-98395A8C6066}</Project>
+      <Name>compile_HouseholderQR_householderQ</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_HouseholderQR_solve.vcxproj">
+      <Project>{37F20918-54A1-371A-B7CD-2B09B7C7DAAC}</Project>
+      <Name>compile_HouseholderQR_solve</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_HouseholderSequence_HouseholderSequence.vcxproj">
+      <Project>{0640E9E7-4514-3A01-AE92-CC8E73F33AE7}</Project>
+      <Name>compile_HouseholderSequence_HouseholderSequence</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_IOFormat.vcxproj">
+      <Project>{0802257B-C578-34BE-AD90-A3A0E8AD189D}</Project>
+      <Name>compile_IOFormat</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_JacobiSVD_basic.vcxproj">
+      <Project>{55500BA6-514B-3E6A-8C3C-42609C2551BB}</Project>
+      <Name>compile_JacobiSVD_basic</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Jacobi_makeGivens.vcxproj">
+      <Project>{BA91A259-9861-37F1-B98E-434EB345A83B}</Project>
+      <Name>compile_Jacobi_makeGivens</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Jacobi_makeJacobi.vcxproj">
+      <Project>{242286A1-B089-3601-957A-3DBAC3F89F2E}</Project>
+      <Name>compile_Jacobi_makeJacobi</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_LLT_example.vcxproj">
+      <Project>{2EDA6CEC-567F-3213-B9AB-ECD0C0B0DA41}</Project>
+      <Name>compile_LLT_example</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_LLT_solve.vcxproj">
+      <Project>{1B91EBBA-2642-38A3-9B9D-D64E91A0C32B}</Project>
+      <Name>compile_LLT_solve</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_LeastSquaresNormalEquations.vcxproj">
+      <Project>{67475984-1A79-3D47-A781-7DF2389A2A9A}</Project>
+      <Name>compile_LeastSquaresNormalEquations</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_LeastSquaresQR.vcxproj">
+      <Project>{8AA73974-3A25-373B-BA88-93E8BB6C7382}</Project>
+      <Name>compile_LeastSquaresQR</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Map_general_stride.vcxproj">
+      <Project>{66835B13-B84B-37E4-A08F-63E8D73ADD02}</Project>
+      <Name>compile_Map_general_stride</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Map_inner_stride.vcxproj">
+      <Project>{E5F9091A-47E2-31AA-B77C-DC1E1711A9BE}</Project>
+      <Name>compile_Map_inner_stride</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Map_outer_stride.vcxproj">
+      <Project>{A075DC0C-EA05-3594-B72C-7278805F7F5B}</Project>
+      <Name>compile_Map_outer_stride</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Map_placement_new.vcxproj">
+      <Project>{66958136-154A-392C-86B1-46E6F65851CA}</Project>
+      <Name>compile_Map_placement_new</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Map_simple.vcxproj">
+      <Project>{2FA208C6-1C0B-345A-B865-745783F6A1BF}</Project>
+      <Name>compile_Map_simple</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_adjoint.vcxproj">
+      <Project>{1EFA9D1B-8D47-32D4-A8B4-56E263ED05A1}</Project>
+      <Name>compile_MatrixBase_adjoint</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_all.vcxproj">
+      <Project>{CBBFC16E-84AB-3B10-80A9-327135106BBD}</Project>
+      <Name>compile_MatrixBase_all</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_applyOnTheLeft.vcxproj">
+      <Project>{C52E6D13-7C0C-34F8-893F-A08B70BC1C69}</Project>
+      <Name>compile_MatrixBase_applyOnTheLeft</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_applyOnTheRight.vcxproj">
+      <Project>{9E38B579-2653-3990-9F1E-B0554C47FA08}</Project>
+      <Name>compile_MatrixBase_applyOnTheRight</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_array.vcxproj">
+      <Project>{FD7EE7DF-5A27-3837-89C3-8147D13E3DFC}</Project>
+      <Name>compile_MatrixBase_array</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_array_const.vcxproj">
+      <Project>{67EC4143-7853-343D-9D33-A56E02E3B53B}</Project>
+      <Name>compile_MatrixBase_array_const</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_asDiagonal.vcxproj">
+      <Project>{DDBD5403-2CDE-3126-9BD9-781F4BEB95A0}</Project>
+      <Name>compile_MatrixBase_asDiagonal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_block_int_int.vcxproj">
+      <Project>{F08A5D47-24CE-36C0-92E7-E7261A5D31FB}</Project>
+      <Name>compile_MatrixBase_block_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_block_int_int_int_int.vcxproj">
+      <Project>{EDE15FBA-FD38-37D9-8BF6-B7CA9BEF3DDA}</Project>
+      <Name>compile_MatrixBase_block_int_int_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_bottomLeftCorner_int_int.vcxproj">
+      <Project>{7F0970FA-6E05-3F87-B243-5ACF639AA054}</Project>
+      <Name>compile_MatrixBase_bottomLeftCorner_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_bottomRightCorner_int_int.vcxproj">
+      <Project>{36545C65-83EF-3760-9AEB-878577E26398}</Project>
+      <Name>compile_MatrixBase_bottomRightCorner_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_bottomRows_int.vcxproj">
+      <Project>{FF325B07-9919-3C9B-89CC-8F040AF7B8DC}</Project>
+      <Name>compile_MatrixBase_bottomRows_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cast.vcxproj">
+      <Project>{E139743E-BD9C-38FB-A826-0BC156BCC529}</Project>
+      <Name>compile_MatrixBase_cast</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_col.vcxproj">
+      <Project>{0290E58F-78A3-3597-AC0C-6D72E3DE446B}</Project>
+      <Name>compile_MatrixBase_col</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_colwise.vcxproj">
+      <Project>{C13B374C-A31A-3B78-8B7C-98504FA58675}</Project>
+      <Name>compile_MatrixBase_colwise</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_computeInverseAndDetWithCheck.vcxproj">
+      <Project>{FF7D48C2-12DD-3056-8390-F4B3871AC040}</Project>
+      <Name>compile_MatrixBase_computeInverseAndDetWithCheck</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_computeInverseWithCheck.vcxproj">
+      <Project>{B964DA27-ECC3-3194-A361-CD157D239ED0}</Project>
+      <Name>compile_MatrixBase_computeInverseWithCheck</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseAbs.vcxproj">
+      <Project>{AA18D578-0BBD-3BE8-8BCB-A572D96C72A0}</Project>
+      <Name>compile_MatrixBase_cwiseAbs</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseAbs2.vcxproj">
+      <Project>{4541131F-A101-3B55-B5F0-16E599A8D575}</Project>
+      <Name>compile_MatrixBase_cwiseAbs2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseArg.vcxproj">
+      <Project>{41F9593A-0C52-3437-9014-7BA4FD32E19D}</Project>
+      <Name>compile_MatrixBase_cwiseArg</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseEqual.vcxproj">
+      <Project>{C3175CBF-2232-31FD-A9EE-2D4729A189AE}</Project>
+      <Name>compile_MatrixBase_cwiseEqual</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseInverse.vcxproj">
+      <Project>{0587CFFC-A8B8-3106-93AC-018ED9138E5A}</Project>
+      <Name>compile_MatrixBase_cwiseInverse</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseMax.vcxproj">
+      <Project>{D10584DB-BE96-3680-A857-3F470BCAA1A9}</Project>
+      <Name>compile_MatrixBase_cwiseMax</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseMin.vcxproj">
+      <Project>{28BC8211-F78B-3F10-BEE6-93F13023369E}</Project>
+      <Name>compile_MatrixBase_cwiseMin</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseNotEqual.vcxproj">
+      <Project>{39189B3C-67FA-31CC-B7FB-8660429E6432}</Project>
+      <Name>compile_MatrixBase_cwiseNotEqual</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseProduct.vcxproj">
+      <Project>{2BB50727-D9BC-3296-A188-0FDBC2F0B1E7}</Project>
+      <Name>compile_MatrixBase_cwiseProduct</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseQuotient.vcxproj">
+      <Project>{3791FD3F-AA61-33BC-82D7-C65BACF91EB2}</Project>
+      <Name>compile_MatrixBase_cwiseQuotient</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseSign.vcxproj">
+      <Project>{96F83A5D-C362-3D25-821A-3A954D1B7DD6}</Project>
+      <Name>compile_MatrixBase_cwiseSign</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_cwiseSqrt.vcxproj">
+      <Project>{4D151CBB-45C1-3B1A-A39A-372FE1B0811A}</Project>
+      <Name>compile_MatrixBase_cwiseSqrt</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_diagonal.vcxproj">
+      <Project>{F059B5F8-C69D-3E97-A926-0000B060BE0C}</Project>
+      <Name>compile_MatrixBase_diagonal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_diagonal_int.vcxproj">
+      <Project>{3E64DA2E-CF45-3AB1-8930-AB3D1D004973}</Project>
+      <Name>compile_MatrixBase_diagonal_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_diagonal_template_int.vcxproj">
+      <Project>{12A24B37-1AF9-3899-A7C6-00B530A494BF}</Project>
+      <Name>compile_MatrixBase_diagonal_template_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_eigenvalues.vcxproj">
+      <Project>{7313247F-E778-3A97-B203-DB83EA55C9E9}</Project>
+      <Name>compile_MatrixBase_eigenvalues</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_end_int.vcxproj">
+      <Project>{081CF246-11B9-3595-B819-75A56CE9666F}</Project>
+      <Name>compile_MatrixBase_end_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_eval.vcxproj">
+      <Project>{42ADAF5A-BF3C-31E3-8192-D36EDEF77361}</Project>
+      <Name>compile_MatrixBase_eval</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_fixedBlock_int_int.vcxproj">
+      <Project>{D52A0705-D1A4-37E0-92B7-1F28232F544F}</Project>
+      <Name>compile_MatrixBase_fixedBlock_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_hnormalized.vcxproj">
+      <Project>{F984B695-0CBB-380E-AC38-F872D106FBB6}</Project>
+      <Name>compile_MatrixBase_hnormalized</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_homogeneous.vcxproj">
+      <Project>{E783BD9B-4AC2-38A5-84BE-94ED61176924}</Project>
+      <Name>compile_MatrixBase_homogeneous</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_identity.vcxproj">
+      <Project>{0D9D90D5-C000-39C4-B8D6-6833B5E84C49}</Project>
+      <Name>compile_MatrixBase_identity</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_identity_int_int.vcxproj">
+      <Project>{B1147E1A-2EAA-30D6-AD2C-DB4463BAB5DC}</Project>
+      <Name>compile_MatrixBase_identity_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_inverse.vcxproj">
+      <Project>{CB78BE97-4A2E-34E9-A9DB-63DAB860D6C2}</Project>
+      <Name>compile_MatrixBase_inverse</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_isDiagonal.vcxproj">
+      <Project>{136D93B6-A1BF-3BB0-BA77-8CF5E6B93A94}</Project>
+      <Name>compile_MatrixBase_isDiagonal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_isIdentity.vcxproj">
+      <Project>{FF08972A-C858-3E0A-8803-58C1FE7C346C}</Project>
+      <Name>compile_MatrixBase_isIdentity</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_isOnes.vcxproj">
+      <Project>{4AF06BC4-614F-3624-BB18-2F34FF80FB93}</Project>
+      <Name>compile_MatrixBase_isOnes</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_isOrthogonal.vcxproj">
+      <Project>{780FA0E0-1953-32D5-8FBF-01DD0E3E9C66}</Project>
+      <Name>compile_MatrixBase_isOrthogonal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_isUnitary.vcxproj">
+      <Project>{C066D686-03E0-37B9-8BA0-7B848DEC219C}</Project>
+      <Name>compile_MatrixBase_isUnitary</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_isZero.vcxproj">
+      <Project>{21670ACD-7020-3FAC-A6BB-0C2214E091E4}</Project>
+      <Name>compile_MatrixBase_isZero</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_leftCols_int.vcxproj">
+      <Project>{02A81DCE-D6AE-37BA-A6F9-686A0BA9AAF6}</Project>
+      <Name>compile_MatrixBase_leftCols_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_noalias.vcxproj">
+      <Project>{2E8679CA-CAE5-3B1A-9D45-70D3BF712FFF}</Project>
+      <Name>compile_MatrixBase_noalias</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_ones.vcxproj">
+      <Project>{19966D88-6BD1-3DFA-A6CC-D9B8EAE93C1B}</Project>
+      <Name>compile_MatrixBase_ones</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_ones_int.vcxproj">
+      <Project>{590DF3A1-86A9-3DF7-A52A-C88623997861}</Project>
+      <Name>compile_MatrixBase_ones_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_ones_int_int.vcxproj">
+      <Project>{68BC352B-E65C-3413-B3D9-733CA0633714}</Project>
+      <Name>compile_MatrixBase_ones_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_operatorNorm.vcxproj">
+      <Project>{DD2E773D-CD79-3829-B105-95A805911C7D}</Project>
+      <Name>compile_MatrixBase_operatorNorm</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_prod.vcxproj">
+      <Project>{12EFBA88-C4B7-352A-A53C-4F89978E838B}</Project>
+      <Name>compile_MatrixBase_prod</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_random.vcxproj">
+      <Project>{A747DAAA-97DE-38B5-A734-B7A71CF7AB40}</Project>
+      <Name>compile_MatrixBase_random</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_random_int.vcxproj">
+      <Project>{D2330035-C756-34E5-8C33-CA20864F8E6E}</Project>
+      <Name>compile_MatrixBase_random_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_random_int_int.vcxproj">
+      <Project>{32AE6433-0825-31CA-86AB-561D5FF21E98}</Project>
+      <Name>compile_MatrixBase_random_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_replicate.vcxproj">
+      <Project>{C3302998-2201-3129-BD74-26993ABCCEF2}</Project>
+      <Name>compile_MatrixBase_replicate</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_replicate_int_int.vcxproj">
+      <Project>{0C65CD0B-9F0C-355E-B916-EC932E9FED83}</Project>
+      <Name>compile_MatrixBase_replicate_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_reshaped_auto.vcxproj">
+      <Project>{09F794F3-EBEA-3163-AE16-E8F055BC64C2}</Project>
+      <Name>compile_MatrixBase_reshaped_auto</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_reshaped_fixed.vcxproj">
+      <Project>{554ACF93-8D6A-36D5-8DC6-7C54E623899C}</Project>
+      <Name>compile_MatrixBase_reshaped_fixed</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_reshaped_int_int.vcxproj">
+      <Project>{C21B51DF-4A79-302B-A7CB-67F78731A0BB}</Project>
+      <Name>compile_MatrixBase_reshaped_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_reshaped_to_vector.vcxproj">
+      <Project>{90F79F80-0CC5-3F1A-83AD-77AAD4BE66DE}</Project>
+      <Name>compile_MatrixBase_reshaped_to_vector</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_reverse.vcxproj">
+      <Project>{F21A0EA1-ABE1-3074-8C0D-46D9C4E03EC4}</Project>
+      <Name>compile_MatrixBase_reverse</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_rightCols_int.vcxproj">
+      <Project>{8705F55F-3AC4-3867-BCA0-556CC4333382}</Project>
+      <Name>compile_MatrixBase_rightCols_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_row.vcxproj">
+      <Project>{7DA8AB9E-3ABF-3598-9979-D9F8D535DC49}</Project>
+      <Name>compile_MatrixBase_row</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_rowwise.vcxproj">
+      <Project>{FB6B3E1C-B225-3806-A848-8FBAD23CDAD3}</Project>
+      <Name>compile_MatrixBase_rowwise</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_segment_int_int.vcxproj">
+      <Project>{065E0CC8-A5FE-3377-9D07-F7E7C77F31E5}</Project>
+      <Name>compile_MatrixBase_segment_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_select.vcxproj">
+      <Project>{7B222D16-55FB-3A63-8DEE-E1A5EEDF399C}</Project>
+      <Name>compile_MatrixBase_select</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_selfadjointView.vcxproj">
+      <Project>{09C8E677-3DEC-35B0-B94A-1DC43DD893C9}</Project>
+      <Name>compile_MatrixBase_selfadjointView</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_set.vcxproj">
+      <Project>{8485F57F-F675-3566-A037-D915A07E3FBA}</Project>
+      <Name>compile_MatrixBase_set</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_setIdentity.vcxproj">
+      <Project>{7689ED92-95AF-35BA-896A-CB930105E42E}</Project>
+      <Name>compile_MatrixBase_setIdentity</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_setOnes.vcxproj">
+      <Project>{E14F0859-5BF7-37E3-98A1-885F9956CBCF}</Project>
+      <Name>compile_MatrixBase_setOnes</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_setRandom.vcxproj">
+      <Project>{5E122106-24C8-39C5-B6EF-81C28B2894DC}</Project>
+      <Name>compile_MatrixBase_setRandom</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_setZero.vcxproj">
+      <Project>{1EA41DEF-F256-320A-A462-45490906F6E8}</Project>
+      <Name>compile_MatrixBase_setZero</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_start_int.vcxproj">
+      <Project>{EB6BB443-FCDC-3D58-AAAA-A0BBE1244DDB}</Project>
+      <Name>compile_MatrixBase_start_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_bottomRows.vcxproj">
+      <Project>{D195278F-58BC-36C2-A0DA-13BD6C25E87A}</Project>
+      <Name>compile_MatrixBase_template_int_bottomRows</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_end.vcxproj">
+      <Project>{3E344844-1129-36DE-A9F3-4F7D171BB552}</Project>
+      <Name>compile_MatrixBase_template_int_end</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_int_block_int_int_int_int.vcxproj">
+      <Project>{B52EF96A-C4D6-36F1-84D9-7401D3958E23}</Project>
+      <Name>compile_MatrixBase_template_int_int_block_int_int_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_int_bottomLeftCorner.vcxproj">
+      <Project>{AFEF0BF2-EC4E-383B-A23C-017174653F10}</Project>
+      <Name>compile_MatrixBase_template_int_int_bottomLeftCorner</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_int_bottomLeftCorner_int_int.vcxproj">
+      <Project>{C293D21F-2E2B-3C33-A9BD-02E5001DED63}</Project>
+      <Name>compile_MatrixBase_template_int_int_bottomLeftCorner_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_int_bottomRightCorner.vcxproj">
+      <Project>{5BD587AC-C134-30D5-BED9-6D71FC236E2B}</Project>
+      <Name>compile_MatrixBase_template_int_int_bottomRightCorner</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_int_bottomRightCorner_int_int.vcxproj">
+      <Project>{7AD8C141-4EB3-35B9-98B6-1BE0304C386C}</Project>
+      <Name>compile_MatrixBase_template_int_int_bottomRightCorner_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_int_topLeftCorner.vcxproj">
+      <Project>{32B0089C-697F-33B9-9EB8-9918EED3D51B}</Project>
+      <Name>compile_MatrixBase_template_int_int_topLeftCorner</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_int_topLeftCorner_int_int.vcxproj">
+      <Project>{4963AF0E-B614-362D-BEE6-C49B4B224F4F}</Project>
+      <Name>compile_MatrixBase_template_int_int_topLeftCorner_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_int_topRightCorner.vcxproj">
+      <Project>{9C84BCB1-AD65-35B5-96BA-95F4E5088064}</Project>
+      <Name>compile_MatrixBase_template_int_int_topRightCorner</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_int_topRightCorner_int_int.vcxproj">
+      <Project>{0F757562-603C-3E6A-A14F-C0159440AD50}</Project>
+      <Name>compile_MatrixBase_template_int_int_topRightCorner_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_leftCols.vcxproj">
+      <Project>{6A49BA8B-D948-3404-A960-2454BD8D0803}</Project>
+      <Name>compile_MatrixBase_template_int_leftCols</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_rightCols.vcxproj">
+      <Project>{A201955B-F268-3CDB-9731-029FD52FAF34}</Project>
+      <Name>compile_MatrixBase_template_int_rightCols</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_segment.vcxproj">
+      <Project>{B01EAB6F-6BB8-3348-BF37-71CDFA3887AF}</Project>
+      <Name>compile_MatrixBase_template_int_segment</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_start.vcxproj">
+      <Project>{D94C2D7A-5D18-3ED1-B66C-476DE1D443CB}</Project>
+      <Name>compile_MatrixBase_template_int_start</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_template_int_topRows.vcxproj">
+      <Project>{DB0F48F1-5764-3516-865D-04E4B7337BCF}</Project>
+      <Name>compile_MatrixBase_template_int_topRows</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_topLeftCorner_int_int.vcxproj">
+      <Project>{90007060-0C9E-3698-BDDD-A43807358036}</Project>
+      <Name>compile_MatrixBase_topLeftCorner_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_topRightCorner_int_int.vcxproj">
+      <Project>{E32943CB-98C0-34D1-906A-184B86B1808C}</Project>
+      <Name>compile_MatrixBase_topRightCorner_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_topRows_int.vcxproj">
+      <Project>{D951C480-7BC2-3D29-9433-E0D51A5D83A1}</Project>
+      <Name>compile_MatrixBase_topRows_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_transpose.vcxproj">
+      <Project>{E7EECD6B-A44B-311B-A51E-2D535E62C854}</Project>
+      <Name>compile_MatrixBase_transpose</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_triangularView.vcxproj">
+      <Project>{05A7D419-4BBC-3DA8-BB1B-7F2F31B00B4B}</Project>
+      <Name>compile_MatrixBase_triangularView</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_zero.vcxproj">
+      <Project>{991C6D4A-2AF1-39A7-8E85-7662CAF95D3E}</Project>
+      <Name>compile_MatrixBase_zero</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_zero_int.vcxproj">
+      <Project>{D6E56BA4-EB15-3FCE-8E70-A8AA7503F73A}</Project>
+      <Name>compile_MatrixBase_zero_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_MatrixBase_zero_int_int.vcxproj">
+      <Project>{F21C058A-BD77-336E-B3D3-FF573179D45B}</Project>
+      <Name>compile_MatrixBase_zero_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_Map_stride.vcxproj">
+      <Project>{43A4D7AD-A20B-3C94-8D64-5E4D4051075A}</Project>
+      <Name>compile_Matrix_Map_stride</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_resize_NoChange_int.vcxproj">
+      <Project>{D648D1C2-F53B-34E4-A79B-3F20E07CE480}</Project>
+      <Name>compile_Matrix_resize_NoChange_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_resize_int.vcxproj">
+      <Project>{134610E2-C65A-3E68-82E0-122255B9E32B}</Project>
+      <Name>compile_Matrix_resize_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_resize_int_NoChange.vcxproj">
+      <Project>{D3B78EF8-1B33-30A1-9F67-5F2909BFADC2}</Project>
+      <Name>compile_Matrix_resize_int_NoChange</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_resize_int_int.vcxproj">
+      <Project>{E0B1F6C7-7FEC-3127-B308-AB127315F445}</Project>
+      <Name>compile_Matrix_resize_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_setConstant_int.vcxproj">
+      <Project>{E25F10C0-B629-38C6-8F63-1F2D8B9912C1}</Project>
+      <Name>compile_Matrix_setConstant_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_setConstant_int_int.vcxproj">
+      <Project>{69E14268-69FE-34CC-BE2C-7BFF992DFEB7}</Project>
+      <Name>compile_Matrix_setConstant_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_setIdentity_int_int.vcxproj">
+      <Project>{4EE4966A-B1B2-3101-9B3C-CB696E36E57C}</Project>
+      <Name>compile_Matrix_setIdentity_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_setOnes_int.vcxproj">
+      <Project>{C08B6E14-D843-3526-8C3C-EDDE4F3E0769}</Project>
+      <Name>compile_Matrix_setOnes_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_setOnes_int_int.vcxproj">
+      <Project>{F0D5B87B-4E76-352F-AD8E-12BEBD9EAAE1}</Project>
+      <Name>compile_Matrix_setOnes_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_setRandom_int.vcxproj">
+      <Project>{A139E0AC-60E4-36A3-9FCA-924DF4BA77A2}</Project>
+      <Name>compile_Matrix_setRandom_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_setRandom_int_int.vcxproj">
+      <Project>{6518F4B9-D3B0-38CE-870C-34202CAE0161}</Project>
+      <Name>compile_Matrix_setRandom_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_setZero_int.vcxproj">
+      <Project>{C5096792-CB44-3E2C-B76A-0BD462F1FEB3}</Project>
+      <Name>compile_Matrix_setZero_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Matrix_setZero_int_int.vcxproj">
+      <Project>{E6B28C18-123F-34E8-BA33-C41CFAA7D105}</Project>
+      <Name>compile_Matrix_setZero_int_int</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_PartialPivLU_solve.vcxproj">
+      <Project>{B2660866-1679-364D-9BE0-518659845E9C}</Project>
+      <Name>compile_PartialPivLU_solve</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_PartialRedux_count.vcxproj">
+      <Project>{5E3CCFB8-5F5A-328B-AD9D-EC59A374569A}</Project>
+      <Name>compile_PartialRedux_count</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_PartialRedux_maxCoeff.vcxproj">
+      <Project>{0F840CB7-9392-300A-B52F-A4E4CB5822B1}</Project>
+      <Name>compile_PartialRedux_maxCoeff</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_PartialRedux_minCoeff.vcxproj">
+      <Project>{55D63AF6-BAA1-3C8F-B838-9F3726C4DB22}</Project>
+      <Name>compile_PartialRedux_minCoeff</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_PartialRedux_norm.vcxproj">
+      <Project>{0FF5B8FB-5D9A-320B-A8EA-99648427386D}</Project>
+      <Name>compile_PartialRedux_norm</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_PartialRedux_prod.vcxproj">
+      <Project>{2B83C853-76D3-307B-B2C3-A1ECCE7E8286}</Project>
+      <Name>compile_PartialRedux_prod</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_PartialRedux_squaredNorm.vcxproj">
+      <Project>{4E5A907F-4C82-3909-8C5F-F2EECB1FFD78}</Project>
+      <Name>compile_PartialRedux_squaredNorm</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_PartialRedux_sum.vcxproj">
+      <Project>{8EAC7760-CCF1-3272-BB8E-85340D6625E5}</Project>
+      <Name>compile_PartialRedux_sum</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_RealQZ_compute.vcxproj">
+      <Project>{D124CDDA-9751-35BB-AD13-5708ED13321D}</Project>
+      <Name>compile_RealQZ_compute</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_RealSchur_RealSchur_MatrixType.vcxproj">
+      <Project>{BCC805A8-6F40-381D-9811-817C4835E939}</Project>
+      <Name>compile_RealSchur_RealSchur_MatrixType</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_RealSchur_compute.vcxproj">
+      <Project>{67854637-85B6-3A58-9AA1-4AC9AE1C48D2}</Project>
+      <Name>compile_RealSchur_compute</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointEigenSolver_SelfAdjointEigenSolver.vcxproj">
+      <Project>{23F7E9C2-422E-3391-816F-226615C870D9}</Project>
+      <Name>compile_SelfAdjointEigenSolver_SelfAdjointEigenSolver</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointEigenSolver_SelfAdjointEigenSolver_MatrixType.vcxproj">
+      <Project>{7914456F-FB54-39F4-A08D-18324DE6371D}</Project>
+      <Name>compile_SelfAdjointEigenSolver_SelfAdjointEigenSolver_MatrixType</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointEigenSolver_SelfAdjointEigenSolver_MatrixType2.vcxproj">
+      <Project>{F2716F3E-F3A1-37CC-844F-DC0A62E502AA}</Project>
+      <Name>compile_SelfAdjointEigenSolver_SelfAdjointEigenSolver_MatrixType2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointEigenSolver_compute_MatrixType.vcxproj">
+      <Project>{79473AA8-770E-3D4C-A1D7-88528354C9BE}</Project>
+      <Name>compile_SelfAdjointEigenSolver_compute_MatrixType</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointEigenSolver_compute_MatrixType2.vcxproj">
+      <Project>{14F40604-4A6D-3A3C-AF30-4CD9E0ADF43E}</Project>
+      <Name>compile_SelfAdjointEigenSolver_compute_MatrixType2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointEigenSolver_eigenvalues.vcxproj">
+      <Project>{45FD8934-20C1-3E0A-891C-66D680B02C09}</Project>
+      <Name>compile_SelfAdjointEigenSolver_eigenvalues</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointEigenSolver_eigenvectors.vcxproj">
+      <Project>{805178BB-D0C8-3B1C-93A0-58C97E5117EB}</Project>
+      <Name>compile_SelfAdjointEigenSolver_eigenvectors</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointEigenSolver_operatorInverseSqrt.vcxproj">
+      <Project>{7E56EA6F-F17E-38C3-BE07-7F1B9658957F}</Project>
+      <Name>compile_SelfAdjointEigenSolver_operatorInverseSqrt</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointEigenSolver_operatorSqrt.vcxproj">
+      <Project>{3B54BF2B-A153-3F1E-BA9D-62572439B1DE}</Project>
+      <Name>compile_SelfAdjointEigenSolver_operatorSqrt</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointView_eigenvalues.vcxproj">
+      <Project>{788DDD39-45DC-3354-A23A-EB6C16A8D508}</Project>
+      <Name>compile_SelfAdjointView_eigenvalues</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SelfAdjointView_operatorNorm.vcxproj">
+      <Project>{DA954CC8-8C58-3156-A90F-5411C6791782}</Project>
+      <Name>compile_SelfAdjointView_operatorNorm</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Slicing_arrayexpr.vcxproj">
+      <Project>{709FA376-1A05-3BD4-AF68-A3C7A770E77F}</Project>
+      <Name>compile_Slicing_arrayexpr</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_SparseMatrix_coeffs.vcxproj">
+      <Project>{6E3CE291-B293-3FCB-BFD3-71CC1F8D018A}</Project>
+      <Name>compile_SparseMatrix_coeffs</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_TopicAliasing_block.vcxproj">
+      <Project>{D6CB54B1-988A-397C-92C7-1488D2435196}</Project>
+      <Name>compile_TopicAliasing_block</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_TopicAliasing_block_correct.vcxproj">
+      <Project>{E3AF0202-8C62-31D6-8F60-5650E0B8380E}</Project>
+      <Name>compile_TopicAliasing_block_correct</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_TopicAliasing_cwise.vcxproj">
+      <Project>{17295416-BC91-3943-9F45-127BB864137B}</Project>
+      <Name>compile_TopicAliasing_cwise</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_TopicAliasing_mult1.vcxproj">
+      <Project>{55DE2664-A42C-3675-AF14-4FC0D2CEB593}</Project>
+      <Name>compile_TopicAliasing_mult1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_TopicAliasing_mult2.vcxproj">
+      <Project>{669FD9EC-4B59-3DD9-B987-C440EE470236}</Project>
+      <Name>compile_TopicAliasing_mult2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_TopicAliasing_mult3.vcxproj">
+      <Project>{3DF6C0D4-8D96-3088-B387-A0C14963C3C2}</Project>
+      <Name>compile_TopicAliasing_mult3</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_TopicAliasing_mult4.vcxproj">
+      <Project>{0DCA2713-37D6-365D-B0CD-6FD1575E429F}</Project>
+      <Name>compile_TopicAliasing_mult4</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_TopicAliasing_mult5.vcxproj">
+      <Project>{DDF074A0-6759-3071-A530-CA9435F12A29}</Project>
+      <Name>compile_TopicAliasing_mult5</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_TopicStorageOrders_example.vcxproj">
+      <Project>{8FF1A473-0D87-3079-ACEE-6BC25F53E663}</Project>
+      <Name>compile_TopicStorageOrders_example</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Triangular_solve.vcxproj">
+      <Project>{93A7E2BB-B8D8-320B-83C4-BEA7FD62F64E}</Project>
+      <Name>compile_Triangular_solve</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tridiagonalization_Tridiagonalization_MatrixType.vcxproj">
+      <Project>{DBA164FF-D384-3367-B03E-9AC17D6C28FE}</Project>
+      <Name>compile_Tridiagonalization_Tridiagonalization_MatrixType</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tridiagonalization_compute.vcxproj">
+      <Project>{C7CAFB52-875E-3E02-8E69-82ADDCF266C8}</Project>
+      <Name>compile_Tridiagonalization_compute</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tridiagonalization_decomposeInPlace.vcxproj">
+      <Project>{9F1DFDE5-8BF7-3418-ADC6-6AE65B0D44F4}</Project>
+      <Name>compile_Tridiagonalization_decomposeInPlace</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tridiagonalization_diagonal.vcxproj">
+      <Project>{CF7ACC29-5233-3B1A-B257-E81637974903}</Project>
+      <Name>compile_Tridiagonalization_diagonal</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tridiagonalization_householderCoefficients.vcxproj">
+      <Project>{5972DE16-1771-36A1-BACE-83B2BB0D798A}</Project>
+      <Name>compile_Tridiagonalization_householderCoefficients</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tridiagonalization_packedMatrix.vcxproj">
+      <Project>{CFF3082D-E1E6-30A6-832D-BEDD076AD524}</Project>
+      <Name>compile_Tridiagonalization_packedMatrix</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_AdvancedInitialization_Block.vcxproj">
+      <Project>{B8DB063E-D3B1-3A82-BE45-1A48A0BBA772}</Project>
+      <Name>compile_Tutorial_AdvancedInitialization_Block</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_AdvancedInitialization_CommaTemporary.vcxproj">
+      <Project>{838A4C84-BB31-372A-AE3F-3FC24B4EDF17}</Project>
+      <Name>compile_Tutorial_AdvancedInitialization_CommaTemporary</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_AdvancedInitialization_Join.vcxproj">
+      <Project>{C72AC0DB-C199-3BE9-838B-AC40C63C9166}</Project>
+      <Name>compile_Tutorial_AdvancedInitialization_Join</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_AdvancedInitialization_LinSpaced.vcxproj">
+      <Project>{8CB82977-5DC6-36D0-9A4C-CD079460BF7A}</Project>
+      <Name>compile_Tutorial_AdvancedInitialization_LinSpaced</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_AdvancedInitialization_ThreeWays.vcxproj">
+      <Project>{8D558AC8-69A7-31EA-9314-CD616164EC49}</Project>
+      <Name>compile_Tutorial_AdvancedInitialization_ThreeWays</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_AdvancedInitialization_Zero.vcxproj">
+      <Project>{816F7CFD-2691-359F-AEF4-D008A5F60AEB}</Project>
+      <Name>compile_Tutorial_AdvancedInitialization_Zero</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_Map_rowmajor.vcxproj">
+      <Project>{B025C446-0A38-324B-A887-2FE8FE701693}</Project>
+      <Name>compile_Tutorial_Map_rowmajor</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_Map_using.vcxproj">
+      <Project>{F74D64C3-3531-3C27-8A3E-13BAF46A4B9C}</Project>
+      <Name>compile_Tutorial_Map_using</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_ReshapeMat2Mat.vcxproj">
+      <Project>{4957DC13-4B82-3EDF-B88A-8C7164165A15}</Project>
+      <Name>compile_Tutorial_ReshapeMat2Mat</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_ReshapeMat2Vec.vcxproj">
+      <Project>{303BEFDB-D069-3FC6-A7FE-A5AE40EF1A0A}</Project>
+      <Name>compile_Tutorial_ReshapeMat2Vec</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_SlicingCol.vcxproj">
+      <Project>{E62707F0-4DBA-31FA-9759-3EAB4D58E1E1}</Project>
+      <Name>compile_Tutorial_SlicingCol</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_SlicingVec.vcxproj">
+      <Project>{DDF508C6-1574-39A8-A65E-809B8B63443C}</Project>
+      <Name>compile_Tutorial_SlicingVec</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_commainit_01.vcxproj">
+      <Project>{8F9700A9-498C-32F1-B67D-299F41AD979F}</Project>
+      <Name>compile_Tutorial_commainit_01</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_commainit_01b.vcxproj">
+      <Project>{6853E03C-1BFC-3EDB-926E-4C50F3BBD056}</Project>
+      <Name>compile_Tutorial_commainit_01b</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_commainit_02.vcxproj">
+      <Project>{BC696595-AD1D-30A9-9DE3-33D68B365BF6}</Project>
+      <Name>compile_Tutorial_commainit_02</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_reshaped_vs_resize_1.vcxproj">
+      <Project>{E10FF17E-940B-36DC-A1B4-577F7FC1C0E9}</Project>
+      <Name>compile_Tutorial_reshaped_vs_resize_1</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_reshaped_vs_resize_2.vcxproj">
+      <Project>{BE5D4EB4-0A0A-3057-9DE3-BBC85158DE4B}</Project>
+      <Name>compile_Tutorial_reshaped_vs_resize_2</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_solve_matrix_inverse.vcxproj">
+      <Project>{F368D6E4-A48B-34FB-BB9F-2E8B7EE7899A}</Project>
+      <Name>compile_Tutorial_solve_matrix_inverse</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_solve_multiple_rhs.vcxproj">
+      <Project>{DD54C2D8-DE2A-3880-A6E8-41F50D45781A}</Project>
+      <Name>compile_Tutorial_solve_multiple_rhs</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_solve_reuse_decomposition.vcxproj">
+      <Project>{25022D2D-8500-377A-881C-4CB111107206}</Project>
+      <Name>compile_Tutorial_solve_reuse_decomposition</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_solve_singular.vcxproj">
+      <Project>{AC35D1CC-8D27-3F6C-859D-6AFA722E20D3}</Project>
+      <Name>compile_Tutorial_solve_singular</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_solve_triangular.vcxproj">
+      <Project>{0BAB33B3-A9F1-3927-944E-E69AD7DAEEC8}</Project>
+      <Name>compile_Tutorial_solve_triangular</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_solve_triangular_inplace.vcxproj">
+      <Project>{2ACECE3B-EC9F-314C-B22A-A3841D934567}</Project>
+      <Name>compile_Tutorial_solve_triangular_inplace</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Tutorial_std_sort.vcxproj">
+      <Project>{775FC6E1-191B-32B1-82D3-677F8A01E363}</Project>
+      <Name>compile_Tutorial_std_sort</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_VectorwiseOp_homogeneous.vcxproj">
+      <Project>{0195800B-45EE-3460-958C-F514FB9467CA}</Project>
+      <Name>compile_VectorwiseOp_homogeneous</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_Vectorwise_reverse.vcxproj">
+      <Project>{BFEEFBC5-94F7-3403-A56F-CBC4CD820160}</Project>
+      <Name>compile_Vectorwise_reverse</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_class_FullPivLU.vcxproj">
+      <Project>{C85D1892-D938-3698-8832-D26B8C46A17C}</Project>
+      <Name>compile_class_FullPivLU</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_tut_arithmetic_redux_minmax.vcxproj">
+      <Project>{322FC845-0B56-35E5-B50A-3AFA48631083}</Project>
+      <Name>compile_tut_arithmetic_redux_minmax</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_tut_arithmetic_transpose_aliasing.vcxproj">
+      <Project>{E2552E0A-325A-3D5A-95F3-395E1157C432}</Project>
+      <Name>compile_tut_arithmetic_transpose_aliasing</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_tut_arithmetic_transpose_conjugate.vcxproj">
+      <Project>{5FA92D35-C975-3D83-AA01-ECF408D9C832}</Project>
+      <Name>compile_tut_arithmetic_transpose_conjugate</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_tut_arithmetic_transpose_inplace.vcxproj">
+      <Project>{CF26D4A3-7E2E-326B-8C3D-4E51E9EBFF61}</Project>
+      <Name>compile_tut_arithmetic_transpose_inplace</Name>
+    </ProjectReference>
+    <ProjectReference Include="C:\dev\Powershell\fftfree\build\_deps\eigen-build\doc\snippets\compile_tut_matrix_assignment_resizing.vcxproj">
+      <Project>{A5D703CB-951A-3E77-86C7-4FDB703FF806}</Project>
+      <Name>compile_tut_matrix_assignment_resizing</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
