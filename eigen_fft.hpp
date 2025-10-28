@@ -1,3 +1,6 @@
+#ifndef EIGFFT_DEBUG
+#define EIGFFT_DEBUG 1
+#endif
 // eigen_fft.hpp (header-only)
 #pragma once
 #include <Eigen/Core>
@@ -7,9 +10,9 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-  #include <xmmintrin.h>  // FTZ/DAZ
-#endif
+// #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+//   #include <xmmintrin.h>  // FTZ/DAZ
+// #endif
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -54,7 +57,11 @@ template<class T> struct Plan {
         b_cache.resize(threadCount);
         perm_col.resize(threadCount);
         capacity = 0;
-        threads = threadCount;
+        std::vector<Complex> W;   // base twiddles size N/2
+        // Debugging output
+        #if EIGFFT_DEBUG
+        std::cout << "Plan constructor entered, n=" << n << std::endl;
+        #endif
       }
       if (cols > capacity) {
         for (auto& row : a_cache) row.resize(cols);
@@ -68,6 +75,7 @@ template<class T> struct Plan {
 
   Plan(int n, bool inv=false, bool threads=true, int max_threads=0)
       : N(n), inverse(inv), W(n/2), bitrev(n), lgN(0), use_threads(threads), requested_threads(max_threads), packet_cols(1) {
+    std::cout << "Plan constructor entered, n=" << n << std::endl;
     // power-of-two check
     int t = N;
     while ((t & 1) == 0) { ++lgN; t >>= 1; }
@@ -78,6 +86,9 @@ template<class T> struct Plan {
   const T tau = sgn * T(2 * std::acos(T(-1))) / T(N);
     for (int k = 0; k < N / 2; ++k) {
       const T ang = tau * T(k);
+            #if EIGFFT_DEBUG
+            std::cout << "Workspace::ensure called with threadCount=" << threadCount << " cols=" << cols << std::endl;
+            #endif
       W[k] = { std::cos(ang), std::sin(ang) };
     }
 
@@ -85,12 +96,21 @@ template<class T> struct Plan {
     for (int i = 0; i < N; ++i) {
       unsigned x = static_cast<unsigned>(i);
       unsigned r = 0;
+              #if EIGFFT_DEBUG
+              std::cout << "  Workspace resized: threads=" << threads << std::endl;
+              #endif
       for (int b = 0; b < lgN; ++b) {
         r = (r << 1) | (x & 1u);
         x >>= 1;
       }
+              #if EIGFFT_DEBUG
+              std::cout << "  Workspace buffers resized to cols=" << cols << std::endl;
+              #endif
       bitrev[i] = static_cast<int>(r);
     }
+            #if EIGFFT_DEBUG
+            std::cout << "  Workspace status: a_cache.size=" << a_cache.size() << " b_cache.size=" << b_cache.size() << " perm_col.size=" << perm_col.size() << " capacity=" << capacity << std::endl;
+            #endif
 
     int packet = static_cast<int>(Eigen::internal::packet_traits<Complex>::size);
     if (packet <= 0) packet = 1;
@@ -104,12 +124,12 @@ template<class T> struct Plan {
 
   // Enable/disable FTZ/DAZ at call sites
   static void set_ftz_daz(bool on) {
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-    _MM_SET_FLUSH_ZERO_MODE(on ? _MM_FLUSH_ZERO_ON : _MM_FLUSH_ZERO_OFF);
-    _MM_SET_DENORMALS_ZERO_MODE(on ? _MM_DENORMALS_ZERO_ON : _MM_DENORMALS_ZERO_OFF);
-#else
+    // #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    //   _MM_SET_FLUSH_ZERO_MODE(on ? _MM_FLUSH_ZERO_ON : _MM_FLUSH_ZERO_OFF);
+    //   _MM_SET_DENORMALS_ZERO_MODE(on ? _MM_DENORMALS_ZERO_ON : _MM_DENORMALS_ZERO_OFF);
+    // #else
     (void)on;
-#endif
+    // #endif
   }
 
   int effective_threads(int batch_cols) const {
@@ -142,117 +162,63 @@ inline void fft_inplace_batched(Eigen::Ref<Eigen::Matrix<std::complex<T>, Eigen:
   P.ensure_workspace(threads, B);
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
 
-  // Compute work geometry
-  auto choose_parallel_dim = [&]() {
-    if (P.tuning.parallel_dim != Plan<T>::ParallelDim::Auto) return P.tuning.parallel_dim;
-    // Heuristic: if B >= 2*threads, prefer Columns; else KBlocks
-    return (B >= 2*threads) ? Plan<T>::ParallelDim::Columns : Plan<T>::ParallelDim::KBlocks;
-  };
-  auto choose_schedule = [&](int work_items){
-    if (P.tuning.schedule == Plan<T>::Schedule::Static) return 0;
-    if (P.tuning.schedule == Plan<T>::Schedule::Dynamic) return 1;
-    if (P.tuning.schedule == Plan<T>::Schedule::Guided) return 2;
-    // Auto:
-    return (work_items < P.tuning.min_work_per_thread*threads) ? 1 : 0; // dynamic for small tasks
-  };
-  const int packet_step = (P.tuning.packet_step>0) ? P.tuning.packet_step : P.packet_cols;
+  #if EIGFFT_DEBUG
+    std::cout << "Workspace buffer sizes: perm_col=" << P.workspace.perm_col.size()
+              << ", a_cache=" << P.workspace.a_cache.size()
+              << ", b_cache=" << P.workspace.b_cache.size() << std::endl;
+    std::cout << "Bitrev size: " << P.bitrev.size() << " N=" << N << " B=" << B << std::endl;
+    if (P.workspace.perm_col.size() == 0 || P.workspace.a_cache.size() == 0 || P.workspace.b_cache.size() == 0) {
+      std::cerr << "Workspace buffers not initialized!" << std::endl;
+      throw std::runtime_error("Workspace buffers not initialized");
+    }
+    if (P.bitrev.size() != N) {
+      std::cerr << "Bitrev size mismatch!" << std::endl;
+      throw std::runtime_error("Bitrev size mismatch");
+    }
+  #endif
 
   // Bit-reversal with explicit temp to avoid aliasing
-#ifdef _OPENMP
-  #pragma omp parallel if(P.use_threads) num_threads(threads)
-#endif
   {
-#ifdef _OPENMP
-    const int tid = P.use_threads ? omp_get_thread_num() : 0;
-#else
-    const int tid = 0;
-#endif
-    auto& tmp = P.workspace.perm_col[tid];
+    std::cout << "Bit-reversal start" << std::endl;
+    auto& tmp = P.workspace.perm_col[0];
     tmp.resize(N);
-#ifdef _OPENMP
-    #pragma omp for schedule(static)
-#endif
     for (int b = 0; b < B; ++b) {
       tmp = X.col(b)(P.bitrev);
       X.col(b) = tmp;
     }
+    std::cout << "Bit-reversal end" << std::endl;
   }
 
   for (int len = 2; len <= N; len <<= 1) {
+    std::cout << "Stage len=" << len << std::endl;
     const int half = len >> 1;
     const int step = N / len;
     const int blocks = N / len;
-    const auto par_dim = choose_parallel_dim();
-    const int work_items = (par_dim==Plan<T>::ParallelDim::Columns) ? B : (half*blocks);
-    const int sched = choose_schedule(work_items);
-
-    // One parallel region per stage
-#ifdef _OPENMP
-    #pragma omp parallel if(P.use_threads) num_threads(threads)
-#endif
-    {
-#ifdef _OPENMP
-      const int tid2 = P.use_threads ? omp_get_thread_num() : 0;
-#else
-      const int tid2 = 0;
-#endif
-      auto& a_cache = P.workspace.a_cache[tid2];
-      auto& b_cache = P.workspace.b_cache[tid2];
-
-      if (par_dim == Plan<T>::ParallelDim::Columns) {
-        auto process_column = [&](int col) {
-          // process one column fully (good when B is big)
-          for (int block = 0; block < blocks; ++block) {
-            const int base = block * len;
-            for (int k = 0; k < half; ++k) {
-              const std::complex<T> w = P.W[k * step];
-              auto a = X(base + k, col);
-              auto b = X(base + k + half, col);
-              if (k==0) {
-                // twiddle = 1
-                X(base + k, col)         = a + b;
-                X(base + k + half, col)  = a - b;
-              } else {
-                const auto t = w * b;
-                X(base + k, col)         = a + t;
-                X(base + k + half, col)  = a - t;
-              }
-            }
-          }
-        };
-
-        #pragma omp for schedule(static)
-        for (int col = 0; col < B; ++col) process_column(col);
-      } else {
-        // Parallelize over k×blocks, vectorize across columns
-        auto process_work = [&](int work) {
-          const int k = work % half;
-          const int block = work / half;
-          const std::complex<T> w = P.W[k * step];
-          const int base = block * len;
-          auto a_row = X.row(base + k);
-          auto b_row = X.row(base + k + half);
-          for (int col = 0; col < B; col += packet_step) {
-            const int width = std::min(packet_step, B - col);
-            auto a_seg = a_row.segment(col, width);
-            auto b_seg = b_row.segment(col, width);
-            a_cache.head(width) = a_seg;
-            b_cache.head(width) = b_seg;
-            if (k==0) {
-              a_seg = a_cache.head(width) + b_cache.head(width);
-              b_seg = a_cache.head(width) - b_cache.head(width);
-            } else {
-              b_cache.head(width) *= w;
-              a_seg = a_cache.head(width) + b_cache.head(width);
-              b_seg = a_cache.head(width) - b_cache.head(width);
-            }
-          }
-        };
-
-        #pragma omp for schedule(static)
-        for (int work = 0; work < half*blocks; ++work) process_work(work);
+    auto& a_cache = P.workspace.a_cache[0];
+    auto& b_cache = P.workspace.b_cache[0];
+    for (int k = 0; k < half; ++k) {
+      const std::complex<T> w = P.W[k * step];
+      for (int block = 0; block < blocks; ++block) {
+        const int base = block * len;
+        auto a_row = X.row(base + k);
+        auto b_row = X.row(base + k + half);
+        for (int col = 0; col < B; col += P.packet_cols) {
+          const int width = std::min(P.packet_cols, B - col);
+          #if EIGFFT_DEBUG
+          std::cout << "  SIMD chunk: stage_len=" << len << " k=" << k << " block=" << block << " col=" << col << " width=" << width << " packet_cols=" << P.packet_cols << std::endl;
+          #endif
+          if (width <= 0) std::cout << "width=0 at col=" << col << std::endl;
+          auto a_seg = a_row.segment(col, width);
+          auto b_seg = b_row.segment(col, width);
+          a_cache.head(width) = a_seg;
+          b_cache.head(width) = b_seg;
+          b_cache.head(width) *= w;
+          a_seg = a_cache.head(width) + b_cache.head(width);
+          b_seg = a_cache.head(width) - b_cache.head(width);
+        }
       }
-    } // parallel region
+    }
+    std::cout << "Stage len=" << len << " end" << std::endl;
   }
   if (P.inverse) X.array() /= T(N);
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);

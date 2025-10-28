@@ -6,22 +6,28 @@
 #include <chrono>
 
 int main() {
+  std::cout << "main() entered" << std::endl;
   try {
     Eigen::setNbThreads(1);  // Disable Eigen's internal threading
+    std::cout << "Before Matrix" << std::endl;
     const int N = 1024, B = 64;
     Eigen::MatrixXcd X(N, B); // fill with time-domain complex data
+    std::cout << "After Matrix" << std::endl;
     // For demo, fill with some data
     for (int i = 0; i < N; ++i) {
       for (int j = 0; j < B; ++j) {
         X(i, j) = std::complex<double>(std::sin(2 * M_PI * i / N), std::cos(2 * M_PI * i / N));
       }
     }
+    std::cout << "After filling" << std::endl;
 
-    eigfft::Plan<double> plan(N, /*inverse=*/false, /*threads=*/false);
+  std::cout << "Creating plan" << std::endl;
+  eigfft::Plan<double> plan(N, /*inverse=*/false, /*threads=*/false);
     plan.tuning.parallel_dim = eigfft::Plan<double>::ParallelDim::Auto; // or Columns/KBlocks
     plan.tuning.packet_step  = 0;    // 0 => auto (=packet size). Try 2× for huge B.
     plan.tuning.schedule     = eigfft::Plan<double>::Schedule::Auto;
     plan.tuning.min_work_per_thread = 64;
+    plan.tuning.force_ftz_daz = false;
     std::cout << "Starting FFT" << std::endl;
     auto start = std::chrono::high_resolution_clock::now();
     eigfft::fft_inplace_batched<double>(X, plan); // now frequency-domain

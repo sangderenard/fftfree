@@ -85896,3 +85896,136 @@ events:
         
       exitCode: 0
 ...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.1/Modules/Internal/CheckSourceCompiles.cmake:104 (try_compile)"
+      - "C:/Program Files/CMake/share/cmake-4.1/Modules/Internal/CheckCompilerFlag.cmake:18 (cmake_check_source_compiles)"
+      - "C:/Program Files/CMake/share/cmake-4.1/Modules/CheckCXXCompilerFlag.cmake:103 (cmake_check_compiler_flag)"
+      - "build/_deps/eigen-src/CMakeLists.txt:71 (check_cxx_compiler_flag)"
+      - "build/_deps/eigen-src/CMakeLists.txt:88 (ei_add_cxx_compiler_flag)"
+    checks:
+      - "Performing Test COMPILER_SUPPORT_std=cpp03"
+    directories:
+      source: "C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-cyzqfm"
+      binary: "C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-cyzqfm"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /W3 /GR /EHsc"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/dev/Powershell/fftfree/build/_deps/eigen-src/cmake"
+    buildResult:
+      variable: "COMPILER_SUPPORT_std=cpp03"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-cyzqfm'
+        
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_25fa6.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        MSBuild version 17.14.19+164abd434 for .NET Framework
+        Build started 10/28/2025 1:21:43 PM.
+        
+        Project "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\cmTC_25fa6.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "cmTC_25fa6.dir\\Debug\\".
+          Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+          Creating directory "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\Debug\\".
+          Creating directory "cmTC_25fa6.dir\\Debug\\cmTC_25fa6.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_25fa6.dir\\Debug\\cmTC_25fa6.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+          Touching "cmTC_25fa6.dir\\Debug\\cmTC_25fa6.tlog\\unsuccessfulbuild".
+        VcpkgTripletSelection:
+          Using triplet "x64-windows" from "C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\"
+          Using normalized configuration "Debug"
+        ClCompile:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\CL.exe /c /I"C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\include" /Zi /W3 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D COMPILER_SUPPORT_std=cpp03 /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /GR /Fo"cmTC_25fa6.dir\\Debug\\\\" /Fd"cmTC_25fa6.dir\\Debug\\vc143.pdb" /external:W3 /Gd /TP /errorReport:queue  -std=c++03 "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\src.cxx"
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35215 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          cl /c /I"C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\include" /Zi /W3 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D COMPILER_SUPPORT_std=cpp03 /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /GR /Fo"cmTC_25fa6.dir\\Debug\\\\" /Fd"cmTC_25fa6.dir\\Debug\\vc143.pdb" /external:W3 /Gd /TP /errorReport:queue  -std=c++03 "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\src.cxx"
+        cl : command line  warning D9002: ignoring unknown option '-std=c++03' [C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\cmTC_25fa6.vcxproj]
+          src.cxx
+        Link:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\Debug\\cmTC_25fa6.exe" /INCREMENTAL /ILK:"cmTC_25fa6.dir\\Debug\\cmTC_25fa6.ilk" /NOLOGO /LIBPATH:"C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\debug\\lib" /LIBPATH:"C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\debug\\lib\\manual-link" kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib "C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\debug\\lib\\*.lib" /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-cyzqfm/Debug/cmTC_25fa6.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-cyzqfm/Debug/cmTC_25fa6.lib" /MACHINE:X64  /machine:x64 cmTC_25fa6.dir\\Debug\\src.obj
+          cmTC_25fa6.vcxproj -> C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\Debug\\cmTC_25fa6.exe
+        AppLocalFromInstalled:
+          pwsh.exe -ExecutionPolicy Bypass -noprofile -File "C:\\Users\\alber\\source\\repos\\vcpkg\\scripts\\buildsystems\\msbuild\\applocal.ps1" "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\Debug\\cmTC_25fa6.exe" "C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\debug\\bin" "cmTC_25fa6.dir\\Debug\\cmTC_25fa6.tlog\\cmTC_25fa6.write.1u.tlog" "cmTC_25fa6.dir\\Debug\\vcpkg.applocal.log"
+        FinalizeBuildStatus:
+          Deleting file "cmTC_25fa6.dir\\Debug\\cmTC_25fa6.tlog\\unsuccessfulbuild".
+          Touching "cmTC_25fa6.dir\\Debug\\cmTC_25fa6.tlog\\cmTC_25fa6.lastbuildstate".
+        Done Building Project "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\cmTC_25fa6.vcxproj" (default targets).
+        
+        Build succeeded.
+        
+        "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\cmTC_25fa6.vcxproj" (default target) (1) ->
+        (ClCompile target) -> 
+          cl : command line  warning D9002: ignoring unknown option '-std=c++03' [C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-cyzqfm\\cmTC_25fa6.vcxproj]
+        
+            1 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:02.00
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "C:/Program Files/CMake/share/cmake-4.1/Modules/CMakeDetermineVSServicePack.cmake:145 (try_compile)"
+      - "build/_deps/eigen-src/cmake/EigenDetermineVSServicePack.cmake:8 (_DetermineVSServicePack_CheckVersionWithTryCompile)"
+      - "build/_deps/eigen-src/cmake/EigenTesting.cmake:460 (EigenDetermineVSServicePack)"
+      - "build/_deps/eigen-src/cmake/EigenTesting.cmake:598 (ei_get_compilerver)"
+      - "build/_deps/eigen-src/cmake/EigenConfigureTesting.cmake:8 (ei_set_build_string)"
+      - "build/_deps/eigen-src/CMakeLists.txt:487 (include)"
+    directories:
+      source: "C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-8v16ly"
+      binary: "C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-8v16ly"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /W4 /GR /EHsc /EHsc /wd4127 /wd4505 /wd4714"
+      CMAKE_EXE_LINKER_FLAGS: "/machine:x64"
+      CMAKE_MODULE_PATH: "C:/dev/Powershell/fftfree/build/_deps/eigen-src/cmake"
+    buildResult:
+      variable: "_CompileResult"
+      cached: true
+      stdout: |
+        Change Dir: 'C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-8v16ly'
+        
+        Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/amd64/MSBuild.exe" cmTC_63fe5.vcxproj /p:Configuration=Debug /p:Platform=x64 /p:VisualStudioVersion=17.0 /v:n
+        MSBuild version 17.14.19+164abd434 for .NET Framework
+        Build started 10/28/2025 1:21:47 PM.
+        
+        Project "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8v16ly\\cmTC_63fe5.vcxproj" on node 1 (default targets).
+        PrepareForBuild:
+          Creating directory "cmTC_63fe5.dir\\Debug\\".
+          Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+          Creating directory "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8v16ly\\Debug\\".
+          Creating directory "cmTC_63fe5.dir\\Debug\\cmTC_63fe5.tlog\\".
+        InitializeBuildStatus:
+          Creating "cmTC_63fe5.dir\\Debug\\cmTC_63fe5.tlog\\unsuccessfulbuild" because "AlwaysCreate" was specified.
+          Touching "cmTC_63fe5.dir\\Debug\\cmTC_63fe5.tlog\\unsuccessfulbuild".
+        VcpkgTripletSelection:
+          Using triplet "x64-windows" from "C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\"
+          Using normalized configuration "Debug"
+        ClCompile:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\CL.exe /c /I"C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\include" /Zi /W4 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /GR /Fo"cmTC_63fe5.dir\\Debug\\\\" /Fd"cmTC_63fe5.dir\\Debug\\vc143.pdb" /external:W4 /Gd /TP /wd4127 /wd4505 /wd4714 /errorReport:queue C:\\dev\\Powershell\\fftfree\\build\\return0.cc
+          Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35215 for x64
+          Copyright (C) Microsoft Corporation.  All rights reserved.
+          cl /c /I"C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\include" /Zi /W4 /WX- /diagnostics:column /Od /Ob0 /D _MBCS /D WIN32 /D _WINDOWS /D "CMAKE_INTDIR=\\"Debug\\"" /EHsc /RTC1 /MDd /GS /fp:precise /GR /Fo"cmTC_63fe5.dir\\Debug\\\\" /Fd"cmTC_63fe5.dir\\Debug\\vc143.pdb" /external:W4 /Gd /TP /wd4127 /wd4505 /wd4714 /errorReport:queue C:\\dev\\Powershell\\fftfree\\build\\return0.cc
+          return0.cc
+        Link:
+          C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe /OUT:"C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8v16ly\\Debug\\cmTC_63fe5.exe" /INCREMENTAL /ILK:"cmTC_63fe5.dir\\Debug\\cmTC_63fe5.ilk" /NOLOGO /LIBPATH:"C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\debug\\lib" /LIBPATH:"C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\debug\\lib\\manual-link" kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib "C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\debug\\lib\\*.lib" /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-8v16ly/Debug/cmTC_63fe5.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /IMPLIB:"C:/dev/Powershell/fftfree/build/CMakeFiles/CMakeScratch/TryCompile-8v16ly/Debug/cmTC_63fe5.lib" /MACHINE:X64  /machine:x64 cmTC_63fe5.dir\\Debug\\return0.obj
+          cmTC_63fe5.vcxproj -> C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8v16ly\\Debug\\cmTC_63fe5.exe
+        AppLocalFromInstalled:
+          pwsh.exe -ExecutionPolicy Bypass -noprofile -File "C:\\Users\\alber\\source\\repos\\vcpkg\\scripts\\buildsystems\\msbuild\\applocal.ps1" "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8v16ly\\Debug\\cmTC_63fe5.exe" "C:\\Users\\alber\\source\\repos\\vcpkg\\installed\\x64-windows\\debug\\bin" "cmTC_63fe5.dir\\Debug\\cmTC_63fe5.tlog\\cmTC_63fe5.write.1u.tlog" "cmTC_63fe5.dir\\Debug\\vcpkg.applocal.log"
+        FinalizeBuildStatus:
+          Deleting file "cmTC_63fe5.dir\\Debug\\cmTC_63fe5.tlog\\unsuccessfulbuild".
+          Touching "cmTC_63fe5.dir\\Debug\\cmTC_63fe5.tlog\\cmTC_63fe5.lastbuildstate".
+        Done Building Project "C:\\dev\\Powershell\\fftfree\\build\\CMakeFiles\\CMakeScratch\\TryCompile-8v16ly\\cmTC_63fe5.vcxproj" (default targets).
+        
+        Build succeeded.
+            0 Warning(s)
+            0 Error(s)
+        
+        Time Elapsed 00:00:02.14
+        
+      exitCode: 0
+...
