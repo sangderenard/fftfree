@@ -8,10 +8,14 @@
 #include <Eigen/Core>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <complex>
+#include <condition_variable>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -76,6 +80,135 @@ struct ButterflyKernel {
       b[lane] = ai - bt;
     }
   }
+};
+
+class ThreadPool {
+ public:
+  ThreadPool() = default;
+  explicit ThreadPool(int total_threads) { reset(total_threads); }
+  ThreadPool(const ThreadPool&) = delete;
+  ThreadPool& operator=(const ThreadPool&) = delete;
+  ~ThreadPool() { stop(); }
+
+  void reset(int total_threads) {
+    stop();
+    total_threads_ = std::max(1, total_threads);
+    worker_count_ = total_threads_ - 1;
+    stop_flag_ = false;
+    if (worker_count_ > 0) {
+      workers_.reserve(worker_count_);
+      for (int i = 0; i < worker_count_; ++i) {
+        workers_.emplace_back([this, worker_id = i + 1]() { worker_loop(worker_id); });
+      }
+    }
+  }
+
+  int size() const { return total_threads_; }
+
+  void parallel_for(size_t total_work, size_t grain,
+                    const std::function<void(int, size_t, size_t)>& fn) {
+    if (total_work == 0) return;
+    grain = std::max<size_t>(1, grain);
+    if (worker_count_ == 0) {
+      size_t start = 0;
+      while (start < total_work) {
+        const size_t end = std::min(total_work, start + grain);
+        fn(0, start, end);
+        start = end;
+      }
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      job_.total_work = total_work;
+      job_.grain = grain;
+      job_.fn = &fn;
+      job_.next.store(0, std::memory_order_release);
+      job_.remaining.store(worker_count_, std::memory_order_release);
+      has_job_ = true;
+    }
+    cv_.notify_all();
+
+    // Main thread participates with id 0.
+    run_tasks(0, fn);
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    done_cv_.wait(lock, [&] { return !has_job_; });
+  }
+
+ private:
+  struct Job {
+    size_t total_work = 0;
+    size_t grain = 1;
+    const std::function<void(int, size_t, size_t)>* fn = nullptr;
+    std::atomic<size_t> next{0};
+    std::atomic<int> remaining{0};
+  };
+
+  void stop() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stop_flag_ = true;
+      has_job_ = false;
+    }
+    cv_.notify_all();
+    for (auto& worker : workers_) {
+      if (worker.joinable()) worker.join();
+    }
+    workers_.clear();
+    worker_count_ = 0;
+    total_threads_ = 1;
+  }
+
+  void worker_loop(int thread_id) {
+    for (;;) {
+      std::unique_lock<std::mutex> lock(mutex_);
+      cv_.wait(lock, [&] { return stop_flag_ || has_job_; });
+      if (stop_flag_) return;
+      const auto fn_ptr = job_.fn;
+      const size_t total_work = job_.total_work;
+      const size_t grain = job_.grain;
+      lock.unlock();
+
+      run_tasks(thread_id, *fn_ptr, total_work, grain);
+
+      if (job_.remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        std::lock_guard<std::mutex> done_lock(mutex_);
+        has_job_ = false;
+        done_cv_.notify_one();
+      }
+    }
+  }
+
+  void run_tasks(int thread_id, const std::function<void(int, size_t, size_t)>& fn,
+                 size_t total_work = 0, size_t grain = 1) {
+    if (total_work == 0) {
+      total_work = job_.total_work;
+      grain = job_.grain;
+    }
+    while (true) {
+      const size_t index = job_.next.fetch_add(grain, std::memory_order_acq_rel);
+      if (index >= total_work) break;
+      const size_t end = std::min(total_work, index + grain);
+      fn(thread_id, index, end);
+    }
+    if (thread_id == 0 && worker_count_ == 0) {
+      std::lock_guard<std::mutex> done_lock(mutex_);
+      has_job_ = false;
+      done_cv_.notify_one();
+    }
+  }
+
+  int total_threads_ = 1;
+  int worker_count_ = 0;
+  std::vector<std::thread> workers_;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::condition_variable done_cv_;
+  bool stop_flag_ = false;
+  bool has_job_ = false;
+  Job job_;
 };
 
 }  // namespace detail
@@ -745,15 +878,191 @@ template<class T>
 void baseline_destroy_state(Plan<T>&, KernelContext*) {}
 
 template<class T>
+struct StockhamKernelState final : KernelContext {
+  using Complex = std::complex<T>;
+  struct ThreadBuffers {
+    std::vector<Complex*> column_ptrs;
+    std::vector<Complex> a_cache;
+    std::vector<Complex> b_cache;
+  };
+
+  void ensure(int desired_threads, int desired_lane_capacity) {
+    desired_threads = std::max(1, desired_threads);
+    desired_lane_capacity = std::max(1, desired_lane_capacity);
+    if (desired_threads != threads_) {
+      threads_ = desired_threads;
+      buffers_.resize(threads_);
+      if (threads_ > 1) {
+        pool_ = std::make_unique<ThreadPool>(threads_);
+      } else {
+        pool_.reset();
+      }
+      if (lane_capacity_ > 0) {
+        for (auto& buf : buffers_) {
+          resize_buffers(buf, lane_capacity_);
+        }
+      }
+    }
+    if (desired_lane_capacity > lane_capacity_) {
+      lane_capacity_ = desired_lane_capacity;
+      for (auto& buf : buffers_) {
+        resize_buffers(buf, lane_capacity_);
+      }
+    }
+  }
+
+  int thread_count() const { return threads_; }
+  int lane_capacity() const { return lane_capacity_; }
+  ThreadPool* pool() const { return pool_.get(); }
+
+  ThreadBuffers& buffers(int thread_id) { return buffers_[thread_id]; }
+
+ private:
+  static void resize_buffers(ThreadBuffers& buf, int lanes) {
+    buf.column_ptrs.resize(lanes);
+    buf.a_cache.resize(lanes);
+    buf.b_cache.resize(lanes);
+  }
+
+  int threads_ = 1;
+  int lane_capacity_ = 0;
+  std::unique_ptr<ThreadPool> pool_;
+  std::vector<ThreadBuffers> buffers_;
+};
+
+template<class T>
 void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx) {
-  (void)ctx;
-  // Placeholder implementation delegates to baseline until custom kernel lands.
-  baseline_execute_axis(P, layout, nullptr);
+  using Complex = typename Plan<T>::Complex;
+  if (!layout.valid()) {
+    throw std::invalid_argument("AxisLayout must reference valid data.");
+  }
+  if (layout.axis_size != P.N) {
+    throw std::invalid_argument("AxisLayout axis_size must match Plan::N.");
+  }
+
+  auto* state = static_cast<StockhamKernelState<T>*>(ctx);
+  if (!state) {
+    baseline_execute_axis(P, layout, nullptr);
+    return;
+  }
+
+  const int N = P.N;
+  const int B = static_cast<int>(layout.batch_size);
+  if (B <= 0) return;
+  const int threads = P.use_threads ? P.effective_threads(B) : 1;
+  const int requested_lanes = (P.tuning.packet_step > 0) ? P.tuning.packet_step : P.packet_cols;
+  const int lane_cols = std::max(1, std::min(B, requested_lanes));
+  state->ensure(threads, lane_cols);
+
+  auto fill_columns = [&](typename StockhamKernelState<T>::ThreadBuffers& buffers,
+                          size_t base_col, int width) {
+    for (int lane = 0; lane < width; ++lane) {
+      const Eigen::Index batch_index = Eigen::Index(base_col + static_cast<size_t>(lane));
+      buffers.column_ptrs[lane] = layout.base + batch_index * layout.batch_stride;
+    }
+  };
+
+  const auto permute_fn = std::function<void(int, size_t, size_t)>(
+      [&](int thread_id, size_t start, size_t end) {
+        auto& buffers = state->buffers(thread_id);
+        size_t pos = start;
+        while (pos < end) {
+          const int width = static_cast<int>(std::min<size_t>(state->lane_capacity(), end - pos));
+          if (width <= 0) break;
+          fill_columns(buffers, pos, width);
+          for (int i = 0; i < N; ++i) {
+            const int src = P.bitrev[i];
+            if (src <= i) continue;
+            const Eigen::Index dst_offset = Eigen::Index(i) * layout.axis_stride;
+            const Eigen::Index src_offset = Eigen::Index(src) * layout.axis_stride;
+            for (int lane = 0; lane < width; ++lane) {
+              Complex* column_ptr = buffers.column_ptrs[lane];
+              std::swap(column_ptr[dst_offset], column_ptr[src_offset]);
+            }
+          }
+          pos += static_cast<size_t>(width);
+        }
+      });
+
+  const auto butterfly_fn = std::function<void(int, size_t, size_t)>(
+      [&](int thread_id, size_t start, size_t end) {
+        auto& buffers = state->buffers(thread_id);
+        auto* a_ptr = buffers.a_cache.data();
+        auto* b_ptr = buffers.b_cache.data();
+        size_t pos = start;
+        while (pos < end) {
+          const int width = static_cast<int>(std::min<size_t>(state->lane_capacity(), end - pos));
+          if (width <= 0) break;
+          fill_columns(buffers, pos, width);
+          for (int len = 2; len <= N; len <<= 1) {
+            const int half = len >> 1;
+            const int step = N / len;
+            for (int k = 0; k < half; ++k) {
+              const Complex w = P.W[k * step];
+              for (int block = 0; block < N; block += len) {
+                const int base = block + k;
+                const Eigen::Index a_offset = Eigen::Index(base) * layout.axis_stride;
+                const Eigen::Index b_offset = Eigen::Index(base + half) * layout.axis_stride;
+                for (int lane = 0; lane < width; ++lane) {
+                  Complex* column_ptr = buffers.column_ptrs[lane];
+                  a_ptr[lane] = column_ptr[a_offset];
+                  b_ptr[lane] = column_ptr[b_offset];
+                }
+                detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w);
+                for (int lane = 0; lane < width; ++lane) {
+                  Complex* column_ptr = buffers.column_ptrs[lane];
+                  column_ptr[a_offset] = a_ptr[lane];
+                  column_ptr[b_offset] = b_ptr[lane];
+                }
+              }
+            }
+          }
+          pos += static_cast<size_t>(width);
+        }
+      });
+
+  const auto scale_fn = std::function<void(int, size_t, size_t)>(
+      [&](int thread_id, size_t start, size_t end) {
+        (void)thread_id;
+        const T scale = T(1) / T(N);
+        size_t pos = start;
+        while (pos < end) {
+          const int width = static_cast<int>(std::min<size_t>(state->lane_capacity(), end - pos));
+          if (width <= 0) break;
+          for (int lane = 0; lane < width; ++lane) {
+            const Eigen::Index batch_index = Eigen::Index(pos + static_cast<size_t>(lane));
+            Complex* column_ptr = layout.base + batch_index * layout.batch_stride;
+            for (int i = 0; i < N; ++i) {
+              column_ptr[Eigen::Index(i) * layout.axis_stride] *= scale;
+            }
+          }
+          pos += static_cast<size_t>(width);
+        }
+      });
+
+  if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
+
+  auto run_parallel = [&](const std::function<void(int, size_t, size_t)>& fn) {
+    if (state->thread_count() <= 1 || !state->pool()) {
+      fn(0, 0, static_cast<size_t>(B));
+    } else {
+      state->pool()->parallel_for(static_cast<size_t>(B),
+                                  static_cast<size_t>(state->lane_capacity()), fn);
+    }
+  };
+
+  run_parallel(permute_fn);
+  run_parallel(butterfly_fn);
+  if (P.inverse) {
+    run_parallel(scale_fn);
+  }
+
+  if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);
 }
 
 template<class T>
 std::unique_ptr<KernelContext> stockham_create_state(Plan<T>&) {
-  return nullptr;
+  return std::make_unique<StockhamKernelState<T>>();
 }
 
 template<class T>
