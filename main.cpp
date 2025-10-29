@@ -35,11 +35,6 @@ inline std::string to_lower(std::string value) {
   return value;
 }
 
-struct PrecisionConfig {
-  std::string label;
-  std::string cli_token;
-};
-
 template <typename Scalar>
 struct PrecisionTraits;
 
@@ -53,12 +48,6 @@ template <>
 struct PrecisionTraits<float> {
   static std::string label() { return "float32"; }
   static std::string cli_token() { return "f32"; }
-};
-
-template <>
-struct PrecisionTraits<Eigen::half> {
-  static std::string label() { return "float16"; }
-  static std::string cli_token() { return "f16"; }
 };
 
 struct RealtimeOptions {
@@ -312,11 +301,10 @@ int main(int argc, char** argv) {
         realtime_opts.enabled = true;
         realtime_opts.duration_seconds = std::stod(arg.substr(14));
       } else if (arg == "--help" || arg == "-h") {
-        std::cout << "Usage: fft_example [--precision=f64,f32,f16]\n"
+        std::cout << "Usage: fft_example [--precision=f64,f32]\n"
                      "  f64 : std::complex<double>\n"
                      "  f32 : std::complex<float>\n"
-                     "  f16 : std::complex<Eigen::half>\n"
-                     "Default is to run all three precisions.\n"
+                     "Default is to run both precisions.\n"
                      "\nReal-time probe options (auto-enable realtime mode):\n"
                      "  --realtime | --rt                 Enable real-time simulation\n"
                      "  --rt-sample-rate=<Hz>             Input sample rate (default 48000, max 1e6)\n"
@@ -333,14 +321,14 @@ int main(int argc, char** argv) {
     }
 
     if (requested.empty()) {
-      requested = {"f64", "f32", "f16"};
+      requested = {"f64", "f32"};
     }
 
-    const std::vector<std::string> known = {"f64", "f32", "f16"};
+    const std::vector<std::string> known = {"f64", "f32"};
     for (const auto& token : requested) {
       if (std::find(known.begin(), known.end(), token) == known.end()) {
         std::cerr << "Unknown precision token '" << token
-                  << "'. Supported tokens: f64,f32,f16." << std::endl;
+                  << "'. Supported tokens: f64,f32." << std::endl;
         return 1;
       }
     }
@@ -352,9 +340,6 @@ int main(int argc, char** argv) {
     }
     if (requested.count("f32")) {
       run_suite_for_precision<float>(seed_rng, realtime_opts);
-    }
-    if (requested.count("f16")) {
-      run_suite_for_precision<Eigen::half>(seed_rng, realtime_opts);
     }
 
     return 0;

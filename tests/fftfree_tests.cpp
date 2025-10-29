@@ -20,9 +20,6 @@ std::string precision_tag<double>() { return "f64"; }
 template <>
 std::string precision_tag<float>() { return "f32"; }
 
-template <>
-std::string precision_tag<Eigen::half>() { return "f16"; }
-
 template <typename Scalar>
 Scalar tolerance();
 
@@ -31,9 +28,6 @@ double tolerance<double>() { return 1e-9; }
 
 template <>
 float tolerance<float>() { return 1e-5f; }
-
-template <>
-Eigen::half tolerance<Eigen::half>() { return Eigen::half(1e-2f); }
 
 template <typename Scalar>
 bool test_roundtrip_small_batches() {
@@ -146,7 +140,6 @@ int main() {
 
   enqueue_precision_tests<double>(results);
   enqueue_precision_tests<float>(results);
-  enqueue_precision_tests<Eigen::half>(results);
 
   int failures = 0;
   for (const auto& entry : results) {
