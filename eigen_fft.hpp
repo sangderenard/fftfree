@@ -8,6 +8,7 @@
 #include <Eigen/Core>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <condition_variable>
@@ -967,6 +968,59 @@ std::unique_ptr<KernelContext> baseline_create_state(Plan<T>&) {
 
 template<class T>
 void baseline_destroy_state(Plan<T>&, KernelContext*) {}
+
+template<class T>
+struct StockhamKernelState final : KernelContext {
+  using Complex = std::complex<T>;
+  struct ThreadBuffers {
+    std::vector<Complex*> column_ptrs;
+    std::vector<Complex> a_cache;
+    std::vector<Complex> b_cache;
+  };
+
+  void ensure(int desired_threads, int desired_lane_capacity) {
+    desired_threads = std::max(1, desired_threads);
+    desired_lane_capacity = std::max(1, desired_lane_capacity);
+    if (desired_threads != threads_) {
+      threads_ = desired_threads;
+      buffers_.resize(threads_);
+      if (threads_ > 1) {
+        pool_ = std::make_unique<ThreadPool>(threads_);
+      } else {
+        pool_.reset();
+      }
+      if (lane_capacity_ > 0) {
+        for (auto& buf : buffers_) {
+          resize_buffers(buf, lane_capacity_);
+        }
+      }
+    }
+    if (desired_lane_capacity > lane_capacity_) {
+      lane_capacity_ = desired_lane_capacity;
+      for (auto& buf : buffers_) {
+        resize_buffers(buf, lane_capacity_);
+      }
+    }
+  }
+
+  int thread_count() const { return threads_; }
+  int lane_capacity() const { return lane_capacity_; }
+  ThreadPool* pool() const { return pool_.get(); }
+
+  ThreadBuffers& buffers(int thread_id) { return buffers_[thread_id]; }
+
+ private:
+  static void resize_buffers(ThreadBuffers& buf, int lanes) {
+    buf.column_ptrs.resize(lanes);
+    buf.a_cache.resize(lanes);
+    buf.b_cache.resize(lanes);
+  }
+
+  int threads_ = 1;
+  int lane_capacity_ = 0;
+  std::unique_ptr<ThreadPool> pool_;
+  std::vector<ThreadBuffers> buffers_;
+};
 
 template<class T>
 void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx) {
