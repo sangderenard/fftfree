@@ -1,6 +1,10 @@
-build/*.*
-build/*
-build-linux/
+/build/*.*
+/build/
+/build-linux/
+build
+./build
+./build/
+./build/*
 *.exe
 *.obj
 build/Release/fft_example.exe

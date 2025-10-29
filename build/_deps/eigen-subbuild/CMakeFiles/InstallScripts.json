@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"C:/dev/Powershell/fftfree/build/_deps/eigen-subbuild/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

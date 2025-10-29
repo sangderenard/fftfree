@@ -9,7 +9,8 @@ An Eigen-based multithreaded batched FFT kernel with tunable parameters.
 - Multithreaded using OpenMP
 - Power-of-two sizes (radix-2 Cooley-Tukey)
 - In-place computation
-- Tunable threading (enable/disable)
+- Parallel-first design with optional debug-only sequential fallback
+- Optional real-time probe to gauge sustainable streaming throughput
 
 ## Building
 
@@ -23,6 +24,12 @@ cmake --build . --config Release
 ```
 
 Eigen is automatically downloaded via FetchContent.
+
+To run the self-tests:
+
+```bash
+ctest --output-on-failure
+```
 
 ## Usage
 
@@ -53,6 +60,29 @@ int main() {
 - `plan.tuning.schedule`: `Auto`, `Static`, `Dynamic`, `Guided` (scheduling policy)
 - `plan.tuning.min_work_per_thread`: Heuristic threshold for dynamic scheduling
 - CMake options: `-DFFTFREE_NATIVE=ON`, `-DFFTFREE_OPENMP=ON`, `-DFFTFREE_FAST_MATH=ON`
+
+> ⚠️ Sequential execution is disabled by default. Define `EIGFFT_ALLOW_SEQUENTIAL` at
+> configure time if you need to opt into the legacy single-thread fallback for
+> debugging or comparison runs.
+
+### Real-time probe
+
+The demo binary can simulate a streaming workload after the micro-benchmarks to
+measure sustained frame/sample rates. Enable it with `--realtime` and adjust the
+parameters as needed:
+
+```
+fft_example --rt \
+  --rt-sample-rate=48000 \
+  --rt-window=2048 \
+  --rt-stride=512 \
+  --rt-duration=10 \
+  --rt-delay-ms=5 \
+  --rt-safety=0.85
+```
+
+The probe reports deadline overruns, worst-frame timings, and the maximum
+sample/frame rates achievable while maintaining the configured safety margin.
 
 ## Performance Notes
 
