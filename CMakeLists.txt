@@ -29,36 +29,46 @@ option(FFTFREE_FAST_MATH "Enable fast-math" ON)
 # to illegal-instruction crashes at runtime.
 set(FFTFREE_MSVC_AUTO_ARCH_FLAG "")
 if (MSVC AND FFTFREE_NATIVE AND FFTFREE_NATIVE_ARCH STREQUAL "AUTO")
-  set(_fftfree_can_query_features FALSE)
-  cmake_host_system_information(RESULT _fftfree_available_queries QUERY AVAILABLE_QUERIES)
-  list(FIND _fftfree_available_queries "PROCESSOR_FEATURES" _fftfree_query_index)
-  if (_fftfree_query_index GREATER -1)
-    set(_fftfree_can_query_features TRUE)
-  endif()
-  unset(_fftfree_query_index)
-  unset(_fftfree_available_queries)
-
-  if (_fftfree_can_query_features)
-    cmake_host_system_information(RESULT FFTFREE_HOST_FEATURES QUERY PROCESSOR_FEATURES)
-    set(_fftfree_features_upper "${FFTFREE_HOST_FEATURES}")
-    list(TRANSFORM _fftfree_features_upper TOUPPER)
-    list(FIND _fftfree_features_upper "AVX2" _fftfree_has_avx2)
-    if (_fftfree_has_avx2 GREATER -1)
-      set(FFTFREE_MSVC_AUTO_ARCH_FLAG "/arch:AVX2")
+  set(_fftfree_detect_src "${CMAKE_CURRENT_LIST_DIR}/cmake/detect_msvc_arch.cpp")
+  if (EXISTS "${_fftfree_detect_src}")
+    if (CMAKE_CROSSCOMPILING)
+      message(WARNING "Host processor feature detection is unavailable while cross-compiling; falling back to default arch selection.")
     else()
-      list(FIND _fftfree_features_upper "AVX" _fftfree_has_avx)
-      if (_fftfree_has_avx GREATER -1)
-        set(FFTFREE_MSVC_AUTO_ARCH_FLAG "/arch:AVX")
+      try_run(
+        _fftfree_arch_run_result
+        _fftfree_arch_compile_result
+        "${CMAKE_BINARY_DIR}/CMakeFiles"
+        "${_fftfree_detect_src}"
+        CMAKE_FLAGS
+          "-DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}"
+          "-DCMAKE_CXX_STANDARD_REQUIRED=${CMAKE_CXX_STANDARD_REQUIRED}"
+        RUN_OUTPUT_VARIABLE _fftfree_arch_output
+        COMPILE_OUTPUT_VARIABLE _fftfree_arch_compile_output
+      )
+
+      if (_fftfree_arch_compile_result EQUAL 0 AND "${_fftfree_arch_run_result}" STREQUAL "0")
+        string(STRIP "${_fftfree_arch_output}" _fftfree_arch_output)
+        if (_fftfree_arch_output STREQUAL "AVX2")
+          set(FFTFREE_MSVC_AUTO_ARCH_FLAG "/arch:AVX2")
+        elseif (_fftfree_arch_output STREQUAL "AVX")
+          set(FFTFREE_MSVC_AUTO_ARCH_FLAG "/arch:AVX")
+        endif()
+      else()
+        set(_fftfree_arch_run_output "${_fftfree_arch_output}")
+        string(STRIP "${_fftfree_arch_run_output}" _fftfree_arch_run_output)
+        message(WARNING "Host processor feature detection failed; falling back to default arch selection.\nCompile output: ${_fftfree_arch_compile_output}\nRun output: ${_fftfree_arch_run_output}")
       endif()
+
+      unset(_fftfree_arch_output)
+      unset(_fftfree_arch_run_output)
+      unset(_fftfree_arch_compile_output)
+      unset(_fftfree_arch_compile_result)
+      unset(_fftfree_arch_run_result)
     endif()
-    unset(_fftfree_has_avx)
-    unset(_fftfree_has_avx2)
-    unset(_fftfree_features_upper)
-    unset(FFTFREE_HOST_FEATURES)
   else()
-    message(WARNING "Host processor feature detection is unavailable with this CMake version; falling back to default arch selection.")
+    message(WARNING "Missing MSVC SIMD detector source '${_fftfree_detect_src}'.")
   endif()
-  unset(_fftfree_can_query_features)
+  unset(_fftfree_detect_src)
 endif()
 
 # Fetch Eigen
