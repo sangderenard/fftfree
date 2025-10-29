@@ -10,8 +10,12 @@
 #include <array>
 #include <cmath>
 #include <complex>
+#include <condition_variable>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <atomic>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -34,6 +38,10 @@ namespace eigfft {
 template<class T>
 struct Plan;
 
+struct KernelContext {
+  virtual ~KernelContext() = default;
+};
+
 namespace detail {
 
 #if defined(EIGFFT_ALLOW_SEQUENTIAL)
@@ -47,6 +55,145 @@ inline constexpr bool kExternalKernelAvailable = true;
 #else
 inline constexpr bool kExternalKernelAvailable = false;
 #endif
+
+class WorkerPool {
+ public:
+  WorkerPool() = default;
+
+  explicit WorkerPool(int threads) { reset(threads); }
+
+  ~WorkerPool() { shutdown(); }
+
+  WorkerPool(const WorkerPool&) = delete;
+  WorkerPool& operator=(const WorkerPool&) = delete;
+  WorkerPool(WorkerPool&&) = delete;
+  WorkerPool& operator=(WorkerPool&&) = delete;
+
+  void reset(int threads) {
+    shutdown();
+    const int requested = std::max(1, threads);
+    total_threads_ = requested;
+    worker_count_ = total_threads_ > 0 ? total_threads_ - 1 : 0;
+    stop_ = false;
+    job_.fn = nullptr;
+    job_.total = 0;
+    job_.chunk = 1;
+    job_.chunk_count = 0;
+    job_.next.store(0, std::memory_order_relaxed);
+    job_.pending.store(0, std::memory_order_relaxed);
+    job_.active = false;
+    workers_.reserve(static_cast<size_t>(worker_count_));
+    for (int i = 0; i < worker_count_; ++i) {
+      workers_.emplace_back([this, worker_id = i + 1]() { worker_loop(worker_id); });
+    }
+  }
+
+  int size() const { return total_threads_; }
+
+  template <class Fn>
+  void parallel_for(size_t total_items, size_t chunk, Fn&& fn) {
+    if (total_items == 0) return;
+    if (chunk == 0) chunk = 1;
+    const size_t chunk_size = chunk;
+    std::function<void(size_t, size_t, int)> wrapped = std::forward<Fn>(fn);
+    if (total_threads_ <= 1 || worker_count_ == 0 || total_items <= chunk_size) {
+      size_t start = 0;
+      while (start < total_items) {
+        const size_t end = std::min(total_items, start + chunk_size);
+        wrapped(start, end, 0);
+        start = end;
+      }
+      return;
+    }
+
+    const size_t chunk_count = (total_items + chunk_size - 1) / chunk_size;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      job_.fn = wrapped;
+      job_.total = total_items;
+      job_.chunk = chunk_size;
+      job_.chunk_count = chunk_count;
+      job_.next.store(0, std::memory_order_relaxed);
+      job_.pending.store(worker_count_, std::memory_order_relaxed);
+      job_.active = true;
+    }
+    cv_job_.notify_all();
+
+    drain_chunks(0);
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_done_.wait(lock, [&] { return !job_.active; });
+    job_.fn = nullptr;
+  }
+
+ private:
+  struct Job {
+    std::function<void(size_t, size_t, int)> fn;
+    size_t total = 0;
+    size_t chunk = 1;
+    size_t chunk_count = 0;
+    std::atomic<size_t> next{0};
+    std::atomic<int> pending{0};
+    bool active = false;
+  };
+
+  void shutdown() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (workers_.empty()) {
+        stop_ = true;
+        job_.active = false;
+      } else {
+        stop_ = true;
+        job_.active = false;
+      }
+    }
+    cv_job_.notify_all();
+    for (auto& worker : workers_) {
+      if (worker.joinable()) worker.join();
+    }
+    workers_.clear();
+    total_threads_ = 1;
+    worker_count_ = 0;
+  }
+
+  void worker_loop(int worker_id) {
+    for (;;) {
+      std::unique_lock<std::mutex> lock(mutex_);
+      cv_job_.wait(lock, [&] { return stop_ || job_.active; });
+      if (stop_) return;
+      lock.unlock();
+
+      drain_chunks(worker_id);
+
+      const int remaining = job_.pending.fetch_sub(1, std::memory_order_acq_rel);
+      if (remaining == 1) {
+        std::lock_guard<std::mutex> done_lock(mutex_);
+        job_.active = false;
+        cv_done_.notify_one();
+      }
+    }
+  }
+
+  void drain_chunks(int worker_id) {
+    for (;;) {
+      const size_t index = job_.next.fetch_add(1, std::memory_order_acq_rel);
+      if (index >= job_.chunk_count) break;
+      const size_t start = index * job_.chunk;
+      const size_t end = std::min(job_.total, start + job_.chunk);
+      job_.fn(start, end, worker_id);
+    }
+  }
+
+  int total_threads_ = 1;
+  int worker_count_ = 0;
+  std::vector<std::thread> workers_;
+  std::mutex mutex_;
+  std::condition_variable cv_job_;
+  std::condition_variable cv_done_;
+  bool stop_ = false;
+  Job job_{};
+};
 
 template <class T>
 struct ButterflyKernel {
@@ -78,6 +225,87 @@ struct ButterflyKernel {
   }
 };
 
+template <class T>
+struct ButterflyScatter {
+  using Complex = std::complex<T>;
+  using Traits = Eigen::internal::packet_traits<Complex>;
+  using Packet = typename Traits::type;
+  static constexpr int PacketSize = Traits::size;
+
+  static void apply(const Complex* a, const Complex* b, Complex* out0, Complex* out1,
+                    int width, const Complex& w) {
+    int lane = 0;
+    if constexpr (PacketSize > 1) {
+      const Packet w_packet = Eigen::internal::pset1<Packet>(w);
+      for (; lane + PacketSize <= width; lane += PacketSize) {
+        const Packet a_pack = Eigen::internal::ploadu<Packet>(a + lane);
+        const Packet b_pack = Eigen::internal::ploadu<Packet>(b + lane);
+        const Packet b_twiddled = Eigen::internal::pmul(b_pack, w_packet);
+        const Packet sum = Eigen::internal::padd(a_pack, b_twiddled);
+        const Packet diff = Eigen::internal::psub(a_pack, b_twiddled);
+        Eigen::internal::pstoreu<Complex, Packet>(out0 + lane, sum);
+        Eigen::internal::pstoreu<Complex, Packet>(out1 + lane, diff);
+      }
+    }
+    for (; lane < width; ++lane) {
+      const Complex ai = a[lane];
+      const Complex bt = b[lane] * w;
+      out0[lane] = ai + bt;
+      out1[lane] = ai - bt;
+    }
+  }
+};
+
+template <class T>
+struct StockhamState : KernelContext {
+  using Complex = std::complex<T>;
+
+  struct ThreadScratch {
+    std::vector<Complex> ping;
+    std::vector<Complex> pong;
+    std::vector<Complex*> columns;
+  };
+
+  explicit StockhamState(Plan<T>& plan)
+      : pool(plan.use_threads ? plan.effective_threads(plan.packet_cols) : 1),
+        lane_capacity(std::max(1, (plan.tuning.packet_step > 0) ? plan.tuning.packet_step
+                                                                : plan.packet_cols)),
+        N(plan.N) {
+    scratch.resize(static_cast<size_t>(std::max(1, pool.size())));
+    resize_buffers();
+  }
+
+  void ensure_lane_capacity(int requested) {
+    if (requested <= lane_capacity) return;
+    lane_capacity = requested;
+    resize_buffers();
+  }
+
+  void ensure_threads(int threads) {
+    const int desired = std::max(1, threads);
+    if (desired == pool.size()) return;
+    pool.reset(desired);
+    resize_buffers();
+  }
+
+  WorkerPool pool;
+  std::vector<ThreadScratch> scratch;
+  int lane_capacity = 1;
+  int N = 0;
+
+ private:
+  void resize_buffers() {
+    const size_t per_lane = static_cast<size_t>(N) * static_cast<size_t>(lane_capacity);
+    if (per_lane == 0) return;
+    scratch.resize(static_cast<size_t>(std::max(1, pool.size())));
+    for (auto& ctx : scratch) {
+      ctx.ping.resize(per_lane);
+      ctx.pong.resize(per_lane);
+      ctx.columns.resize(static_cast<size_t>(lane_capacity));
+    }
+  }
+};
+
 }  // namespace detail
 
 template <class T>
@@ -105,10 +333,6 @@ struct AxisLayout {
 enum class KernelKind { Baseline, Stockham, External };
 
 enum class KernelAccuracy { Default, HighPrecision, Reference };
-
-struct KernelContext {
-  virtual ~KernelContext() = default;
-};
 
 namespace detail {
 
@@ -746,14 +970,117 @@ void baseline_destroy_state(Plan<T>&, KernelContext*) {}
 
 template<class T>
 void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx) {
-  (void)ctx;
-  // Placeholder implementation delegates to baseline until custom kernel lands.
-  baseline_execute_axis(P, layout, nullptr);
+  using Complex = typename Plan<T>::Complex;
+  if (!layout.valid()) {
+    throw std::invalid_argument("AxisLayout must reference valid data.");
+  }
+  if (layout.axis_size != P.N) {
+    throw std::invalid_argument("AxisLayout axis_size must match Plan::N.");
+  }
+  auto* state = static_cast<StockhamState<T>*>(ctx);
+  if (!state) {
+    baseline_execute_axis(P, layout, nullptr);
+    return;
+  }
+
+  const int N = P.N;
+  const int stages = P.lgN;
+  const int B = static_cast<int>(layout.batch_size);
+  if (B <= 0) {
+    if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);
+    return;
+  }
+
+  const int desired_threads = P.effective_threads(B);
+  state->ensure_threads(desired_threads);
+
+  const int requested_lanes =
+      (P.tuning.packet_step > 0) ? P.tuning.packet_step : P.packet_cols;
+  const int lane_cols = std::max(1, requested_lanes);
+  state->ensure_lane_capacity(lane_cols);
+  const int lane_capacity = state->lane_capacity;
+  const Eigen::Index axis_stride = layout.axis_stride;
+  const Eigen::Index batch_stride = layout.batch_stride;
+
+  if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
+
+  auto process_chunk = [&](size_t start, size_t end, int worker_id) {
+    if (start >= static_cast<size_t>(B)) return;
+    const int width = static_cast<int>(end - start);
+    if (width <= 0) return;
+    size_t slot = static_cast<size_t>(worker_id);
+    if (slot >= state->scratch.size()) {
+      slot = state->scratch.empty() ? size_t(0) : state->scratch.size() - 1;
+    }
+    auto& scratch = state->scratch[slot];
+    auto* columns = scratch.columns.data();
+    for (int lane = 0; lane < width; ++lane) {
+      const Eigen::Index batch_index = Eigen::Index(start + lane);
+      columns[lane] = layout.base + batch_index * batch_stride;
+    }
+
+    Complex* stage_in = scratch.ping.data();
+    Complex* stage_out = scratch.pong.data();
+    for (int i = 0; i < N; ++i) {
+      const Eigen::Index offset = Eigen::Index(i) * axis_stride;
+      Complex* dest = stage_in + i * lane_capacity;
+      for (int lane = 0; lane < width; ++lane) {
+        dest[lane] = columns[lane][offset];
+      }
+    }
+
+    Complex* in = stage_in;
+    Complex* out = stage_out;
+    for (int stage = 0; stage < stages; ++stage) {
+      const int m = 1 << stage;
+      const int distance = m << 1;
+      const int groups = N / distance;
+      const int tw_step = N / distance;
+      for (int j = 0; j < m; ++j) {
+        const Complex w = P.W[j * tw_step];
+        for (int g = 0; g < groups; ++g) {
+          const int idx0 = g * distance + j;
+          const int idx1 = idx0 + m;
+          const int out_base = g * distance + (j << 1);
+          const Complex* src0 = in + idx0 * lane_capacity;
+          const Complex* src1 = in + idx1 * lane_capacity;
+          Complex* dst0 = out + out_base * lane_capacity;
+          Complex* dst1 = out + (out_base + 1) * lane_capacity;
+          ButterflyScatter<T>::apply(src0, src1, dst0, dst1, width, w);
+        }
+      }
+      std::swap(in, out);
+    }
+
+    const Complex* final_buf = (stages % 2 == 0) ? stage_in : stage_out;
+    if (P.inverse) {
+      const T scale = T(1) / T(N);
+      for (int i = 0; i < N; ++i) {
+        const Eigen::Index offset = Eigen::Index(i) * axis_stride;
+        const Complex* src = final_buf + i * lane_capacity;
+        for (int lane = 0; lane < width; ++lane) {
+          columns[lane][offset] = src[lane] * scale;
+        }
+      }
+    } else {
+      for (int i = 0; i < N; ++i) {
+        const Eigen::Index offset = Eigen::Index(i) * axis_stride;
+        const Complex* src = final_buf + i * lane_capacity;
+        for (int lane = 0; lane < width; ++lane) {
+          columns[lane][offset] = src[lane];
+        }
+      }
+    }
+  };
+
+  state->pool.parallel_for(static_cast<size_t>(B), static_cast<size_t>(lane_cols), process_chunk);
+
+  if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);
 }
 
 template<class T>
-std::unique_ptr<KernelContext> stockham_create_state(Plan<T>&) {
-  return nullptr;
+std::unique_ptr<KernelContext> stockham_create_state(Plan<T>& plan) {
+  return std::unique_ptr<KernelContext>(new StockhamState<T>(plan));
 }
 
 template<class T>
