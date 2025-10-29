@@ -60,6 +60,8 @@ int main() {
 - `plan.tuning.schedule`: `Auto`, `Static`, `Dynamic`, `Guided` (scheduling policy)
 - `plan.tuning.min_work_per_thread`: Heuristic threshold for dynamic scheduling
 - CMake options: `-DFFTFREE_NATIVE=ON`, `-DFFTFREE_OPENMP=ON`, `-DFFTFREE_FAST_MATH=ON`
+- On MSVC you can override the SIMD level explicitly with
+  `-DFFTFREE_NATIVE_ARCH=SSE2|AVX|AVX2` if auto-detection does not match your CPU
 
 > ⚠️ Sequential execution is disabled by default. Define `EIGFFT_ALLOW_SEQUENTIAL` at
 > configure time if you need to opt into the legacy single-thread fallback for

@@ -3,6 +3,7 @@
 #include <Eigen/Core>
 
 #include <chrono>
+#include <complex>
 #include <cctype>
 #include <iomanip>
 #include <iostream>
@@ -16,6 +17,25 @@
 #include <vector>
 
 namespace {
+
+static void dump_simd_caps() {
+  std::cout << "Pointer size: " << (8 * sizeof(void*)) << "-bit" << std::endl;
+#if defined(EIGEN_VECTORIZE_AVX512)
+  std::cout << "Eigen SIMD: AVX512" << std::endl;
+#elif defined(EIGEN_VECTORIZE_AVX2)
+  std::cout << "Eigen SIMD: AVX2" << std::endl;
+#elif defined(EIGEN_VECTORIZE_AVX)
+  std::cout << "Eigen SIMD: AVX" << std::endl;
+#elif defined(EIGEN_VECTORIZE_SSE3) || defined(EIGEN_VECTORIZE_SSE2)
+  std::cout << "Eigen SIMD: SSE2/SSE3" << std::endl;
+#else
+  std::cout << "Eigen SIMD: NONE (scalar)" << std::endl;
+#endif
+  std::cout << "packet<std::complex<float>>::size  = "
+            << Eigen::internal::packet_traits<std::complex<float>>::size << std::endl;
+  std::cout << "packet<std::complex<double>>::size = "
+            << Eigen::internal::packet_traits<std::complex<double>>::size << std::endl;
+}
 
 struct BenchmarkCase {
   int N;
@@ -266,6 +286,7 @@ int main(int argc, char** argv) {
   std::cout << "fftfree micro-benchmark" << std::endl;
 
   try {
+    dump_simd_caps();
     Eigen::setNbThreads(1);
 
     std::unordered_set<std::string> requested;
