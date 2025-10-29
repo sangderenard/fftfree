@@ -6,8 +6,20 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(FFTFREE_NATIVE "Enable explicit SIMD tuning (use FFTFREE_NATIVE_ARCH to pick level)" ON)
+option(FFTFREE_NATIVE_ARCH_PIN "Keep a manually selected FFTFREE_NATIVE_ARCH value, even if it matches the legacy AVX2 default" OFF)
 set(FFTFREE_NATIVE_ARCH "AUTO" CACHE STRING "SIMD level when FFTFREE_NATIVE=ON (choices: AUTO, SSE2, AVX, AVX2)")
 set_property(CACHE FFTFREE_NATIVE_ARCH PROPERTY STRINGS "AUTO" "SSE2" "AVX" "AVX2")
+
+# Prior revisions defaulted to AVX2 on MSVC, which breaks deployments on CPUs lacking AVX2.
+# Upgrades would keep that cached default, so reset it to AUTO unless the user explicitly pins it.
+if (NOT FFTFREE_NATIVE_ARCH_PIN)
+  string(TOUPPER "${FFTFREE_NATIVE_ARCH}" _fftfree_native_arch_upper)
+  if (_fftfree_native_arch_upper STREQUAL "AVX2")
+    message(STATUS "Resetting FFTFREE_NATIVE_ARCH from legacy default AVX2 to AUTO. Set FFTFREE_NATIVE_ARCH_PIN=ON to keep AVX2.")
+    set(FFTFREE_NATIVE_ARCH "AUTO" CACHE STRING "SIMD level when FFTFREE_NATIVE=ON (choices: AUTO, SSE2, AVX, AVX2)" FORCE)
+  endif()
+  unset(_fftfree_native_arch_upper)
+endif()
 option(FFTFREE_OPENMP "Enable OpenMP" ON)
 option(FFTFREE_FAST_MATH "Enable fast-math" ON)
 
