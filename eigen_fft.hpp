@@ -7,11 +7,13 @@
 
 #include <Eigen/Core>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -38,6 +40,12 @@ namespace detail {
 inline constexpr bool kAllowSequentialFallback = true;
 #else
 inline constexpr bool kAllowSequentialFallback = false;
+#endif
+
+#if defined(EIGFFT_ENABLE_EXTERNAL_KERNEL)
+inline constexpr bool kExternalKernelAvailable = true;
+#else
+inline constexpr bool kExternalKernelAvailable = false;
 #endif
 
 template <class T>
@@ -162,8 +170,7 @@ template<class T> struct Plan {
     int threads = 0;
     std::vector<RowBuffer> a_cache;
     std::vector<RowBuffer> b_cache;
-    std::vector<Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>>
-        perm_block;
+    std::vector<std::vector<Complex*>> column_ptrs;
     Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> nd_transpose;
     Eigen::Index nd_rows = 0;
     Eigen::Index nd_cols = 0;
@@ -173,7 +180,7 @@ template<class T> struct Plan {
       if (threadCount != threads) {
         a_cache.resize(threadCount);
         b_cache.resize(threadCount);
-        perm_block.resize(threadCount);
+        column_ptrs.resize(threadCount);
         threads = threadCount;
         capacity = 0;
 #if EIGFFT_DEBUG
@@ -184,7 +191,10 @@ template<class T> struct Plan {
       if (cols > capacity) {
         for (auto& row : a_cache) row.resize(cols);
         for (auto& row : b_cache) row.resize(cols);
-        for (auto& block : perm_block) block.resize(0, 0);
+        for (auto& columns : column_ptrs) {
+          columns.resize(cols);
+          std::fill(columns.begin(), columns.end(), nullptr);
+        }
         capacity = cols;
 #if EIGFFT_DEBUG
         std::cout << "Workspace::ensure expanded capacity to cols=" << capacity
@@ -350,6 +360,25 @@ template<class T> struct Plan {
     return kernel_desc_ ? *kernel_desc_ : baseline_kernel();
   }
 
+  bool use_kernel(KernelKind kind) {
+    if (const KernelDescriptor* desc = find_kernel(kind)) {
+      select_kernel(*desc);
+      return true;
+    }
+    return false;
+  }
+
+  bool use_kernel(std::string_view name) {
+    if (const KernelDescriptor* desc = find_kernel(name)) {
+      select_kernel(*desc);
+      return true;
+    }
+    return false;
+  }
+
+  bool kernel_realtime_safe() const { return kernel().realtime_safe; }
+  KernelAccuracy kernel_accuracy() const { return kernel().accuracy; }
+
   KernelContext* kernel_state() const {
     return kernel_state_.get();
   }
@@ -357,6 +386,11 @@ template<class T> struct Plan {
   static const KernelDescriptor& baseline_kernel();
   static const KernelDescriptor& stockham_kernel();
   static const KernelDescriptor& external_kernel();
+  static const std::array<const KernelDescriptor*, 3>& builtin_kernels();
+
+  static constexpr bool has_external_kernel() {
+    return detail::kExternalKernelAvailable;
+  }
 
  private:
   void release_kernel() {
@@ -365,6 +399,31 @@ template<class T> struct Plan {
     }
     kernel_state_.reset();
     kernel_desc_ = nullptr;
+  }
+
+  const KernelDescriptor* find_kernel(KernelKind kind) const {
+    switch (kind) {
+      case KernelKind::Baseline:
+        return &baseline_kernel();
+      case KernelKind::Stockham:
+        return &stockham_kernel();
+      case KernelKind::External:
+        if (detail::kExternalKernelAvailable) {
+          return &external_kernel();
+        }
+        return nullptr;
+    }
+    return nullptr;
+  }
+
+  const KernelDescriptor* find_kernel(std::string_view name) const {
+    const auto& all = builtin_kernels();
+    for (const auto* desc : all) {
+      if (desc && desc->name && name == desc->name) {
+        return desc;
+      }
+    }
+    return nullptr;
   }
 };
 
@@ -426,120 +485,124 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
 #endif
   }
 
+  bool permuted_in_parallel = false;
 #ifdef _OPENMP
   if (P.use_threads && threads > 1) {
+    permuted_in_parallel = true;
 #pragma omp parallel num_threads(threads)
-  {
-    const int tid = omp_get_thread_num();
-    auto& tmp = P.workspace.perm_block[tid];
-    tmp.resize(N, lane_cols);
+    {
+      const int tid = omp_get_thread_num();
+      auto& columns = P.workspace.column_ptrs[tid];
 #pragma omp for schedule(static)
-    for (int chunk = 0; chunk < chunk_count; ++chunk) {
-      const int col = chunk * lane_cols;
-      const int width = std::min(lane_cols, B - col);
-      if (width <= 0) continue;
-      for (int lane = 0; lane < width; ++lane) {
-        const Eigen::Index batch_index = Eigen::Index(col + lane);
-        Complex* column_ptr = layout.base + batch_index * batch_stride;
-        for (int i = 0; i < N; ++i) {
-          tmp.coeffRef(i, lane) =
-              column_ptr[Eigen::Index(i) * axis_stride];
+      for (int chunk = 0; chunk < chunk_count; ++chunk) {
+        const int col = chunk * lane_cols;
+        const int width = std::min(lane_cols, B - col);
+        if (width <= 0) continue;
+        for (int lane = 0; lane < width; ++lane) {
+          const Eigen::Index batch_index = Eigen::Index(col + lane);
+          columns[lane] = layout.base + batch_index * batch_stride;
         }
-      }
-      for (int lane = 0; lane < width; ++lane) {
-        const Eigen::Index batch_index = Eigen::Index(col + lane);
-        Complex* column_ptr = layout.base + batch_index * batch_stride;
         for (int i = 0; i < N; ++i) {
           const int src = bitrev[i];
-          column_ptr[Eigen::Index(i) * axis_stride] = tmp.coeff(src, lane);
+          if (src <= i) continue;
+          const Eigen::Index dst_offset = Eigen::Index(i) * axis_stride;
+          const Eigen::Index src_offset = Eigen::Index(src) * axis_stride;
+          for (int lane = 0; lane < width; ++lane) {
+            Complex* column_ptr = columns[lane];
+            std::swap(column_ptr[dst_offset], column_ptr[src_offset]);
+          }
         }
       }
     }
   }
 #endif
+  if (!permuted_in_parallel) {
 #if defined(EIGFFT_ALLOW_SEQUENTIAL)
-  else {
-    auto& tmp = P.workspace.perm_block[0];
-    tmp.resize(N, lane_cols);
+    auto& columns = P.workspace.column_ptrs[0];
     for (int chunk = 0; chunk < chunk_count; ++chunk) {
       const int col = chunk * lane_cols;
       const int width = std::min(lane_cols, B - col);
       if (width <= 0) continue;
       for (int lane = 0; lane < width; ++lane) {
         const Eigen::Index batch_index = Eigen::Index(col + lane);
-        Complex* column_ptr = layout.base + batch_index * batch_stride;
-        for (int i = 0; i < N; ++i) {
-          tmp.coeffRef(i, lane) =
-              column_ptr[Eigen::Index(i) * axis_stride];
-        }
+        columns[lane] = layout.base + batch_index * batch_stride;
       }
-      for (int lane = 0; lane < width; ++lane) {
-        const Eigen::Index batch_index = Eigen::Index(col + lane);
-        Complex* column_ptr = layout.base + batch_index * batch_stride;
-        for (int i = 0; i < N; ++i) {
-          const int src = bitrev[i];
-          column_ptr[Eigen::Index(i) * axis_stride] = tmp.coeff(src, lane);
+      for (int i = 0; i < N; ++i) {
+        const int src = bitrev[i];
+        if (src <= i) continue;
+        const Eigen::Index dst_offset = Eigen::Index(i) * axis_stride;
+        const Eigen::Index src_offset = Eigen::Index(src) * axis_stride;
+        for (int lane = 0; lane < width; ++lane) {
+          Complex* column_ptr = columns[lane];
+          std::swap(column_ptr[dst_offset], column_ptr[src_offset]);
         }
       }
     }
-  }
 #else
-  else {
     throw std::runtime_error(
         "Sequential permutation path disabled. Define EIGFFT_ALLOW_SEQUENTIAL to allow single-thread fallback.");
-  }
 #endif
+  }
 
   for (int len = 2; len <= N; len <<= 1) {
     const int half = len >> 1;
     const int step = N / len;
     const int blocks = N / len;
+
+    bool butterflies_in_parallel = false;
 #ifdef _OPENMP
   if (P.use_threads && threads > 1) {
+    butterflies_in_parallel = true;
 #pragma omp parallel num_threads(threads)
-  {
-    const int tid = omp_get_thread_num();
-    auto& a_cache = P.workspace.a_cache[tid];
-    auto& b_cache = P.workspace.b_cache[tid];
-    Complex* a_ptr = a_cache.data();
-    Complex* b_ptr = b_cache.data();
-    for (int k = 0; k < half; ++k) {
-      const Complex w = P.W[k * step];
-      const int work_items = blocks * chunk_count;
-      if (work_items == 0) continue;
+    {
+      const int tid = omp_get_thread_num();
+      auto& a_cache = P.workspace.a_cache[tid];
+      auto& b_cache = P.workspace.b_cache[tid];
+      auto& columns = P.workspace.column_ptrs[tid];
+      Complex* a_ptr = a_cache.data();
+      Complex* b_ptr = b_cache.data();
+      const int work_items = half * blocks * chunk_count;
+      if (work_items > 0) {
 #pragma omp for schedule(static)
-      for (int item = 0; item < work_items; ++item) {
-        const int block = item / chunk_count;
-        const int chunk = item % chunk_count;
-        const int col = chunk * lane_cols;
-        const int width = std::min(lane_cols, B - col);
-        if (width <= 0) continue;
-        const int a_index = block * len + k;
-        const int b_index = a_index + half;
-        const Eigen::Index a_offset = Eigen::Index(a_index) * axis_stride;
-        const Eigen::Index b_offset = Eigen::Index(b_index) * axis_stride;
-        for (int lane = 0; lane < width; ++lane) {
-          const Eigen::Index batch_index = Eigen::Index(col + lane);
-          Complex* column_ptr = layout.base + batch_index * batch_stride;
-          a_ptr[lane] = column_ptr[a_offset];
-          b_ptr[lane] = column_ptr[b_offset];
-        }
-        detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w);
-        for (int lane = 0; lane < width; ++lane) {
-          const Eigen::Index batch_index = Eigen::Index(col + lane);
-          Complex* column_ptr = layout.base + batch_index * batch_stride;
-          column_ptr[a_offset] = a_ptr[lane];
-          column_ptr[b_offset] = b_ptr[lane];
+        for (int item = 0; item < work_items; ++item) {
+          int tmp = item;
+          const int chunk = tmp % chunk_count;
+          tmp /= chunk_count;
+          const int block = tmp % blocks;
+          const int k = tmp / blocks;
+          const int col = chunk * lane_cols;
+          const int width = std::min(lane_cols, B - col);
+          if (width <= 0) continue;
+          for (int lane = 0; lane < width; ++lane) {
+            const Eigen::Index batch_index = Eigen::Index(col + lane);
+            columns[lane] = layout.base + batch_index * batch_stride;
+          }
+          const int a_index = block * len + k;
+          const int b_index = a_index + half;
+          const Eigen::Index a_offset = Eigen::Index(a_index) * axis_stride;
+          const Eigen::Index b_offset = Eigen::Index(b_index) * axis_stride;
+          const Complex w = P.W[k * step];
+          for (int lane = 0; lane < width; ++lane) {
+            Complex* column_ptr = columns[lane];
+            a_ptr[lane] = column_ptr[a_offset];
+            b_ptr[lane] = column_ptr[b_offset];
+          }
+          detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w);
+          for (int lane = 0; lane < width; ++lane) {
+            Complex* column_ptr = columns[lane];
+            column_ptr[a_offset] = a_ptr[lane];
+            column_ptr[b_offset] = b_ptr[lane];
+          }
         }
       }
     }
   }
-    }
 #endif
+    if (!butterflies_in_parallel) {
 #if defined(EIGFFT_ALLOW_SEQUENTIAL)
-    else {
       auto& a_cache = P.workspace.a_cache[0];
       auto& b_cache = P.workspace.b_cache[0];
+      auto& columns = P.workspace.column_ptrs[0];
       Complex* a_ptr = a_cache.data();
       Complex* b_ptr = b_cache.data();
       for (int k = 0; k < half; ++k) {
@@ -556,28 +619,29 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
             if (width <= 0) continue;
             for (int lane = 0; lane < width; ++lane) {
               const Eigen::Index batch_index = Eigen::Index(col + lane);
-              Complex* column_ptr = layout.base + batch_index * batch_stride;
+              columns[lane] = layout.base + batch_index * batch_stride;
+            }
+            for (int lane = 0; lane < width; ++lane) {
+              Complex* column_ptr = columns[lane];
               a_ptr[lane] = column_ptr[a_offset];
               b_ptr[lane] = column_ptr[b_offset];
             }
             detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w);
             for (int lane = 0; lane < width; ++lane) {
-              const Eigen::Index batch_index = Eigen::Index(col + lane);
-              Complex* column_ptr = layout.base + batch_index * batch_stride;
+              Complex* column_ptr = columns[lane];
               column_ptr[a_offset] = a_ptr[lane];
               column_ptr[b_offset] = b_ptr[lane];
             }
           }
         }
       }
-    }
 #else
-    else {
       throw std::runtime_error(
           "Sequential butterfly path disabled. Define EIGFFT_ALLOW_SEQUENTIAL to allow single-thread fallback.");
-    }
 #endif
+    }
   }
+
   if (P.inverse) {
     const T scale = T(1) / T(N);
     for (int col = 0; col < B; ++col) {
@@ -763,11 +827,19 @@ const typename Plan<T>::KernelDescriptor& Plan<T>::external_kernel() {
       "external-provider",
       KernelAccuracy::HighPrecision,
       false,
-      detail::external_create_state<T>,
-      detail::external_execute_axis<T>,
-      detail::external_destroy_state<T>
+      detail::kExternalKernelAvailable ? detail::external_create_state<T> : nullptr,
+      detail::kExternalKernelAvailable ? detail::external_execute_axis<T> : nullptr,
+      detail::kExternalKernelAvailable ? detail::external_destroy_state<T> : nullptr
   };
   return desc;
+}
+
+template<class T>
+const std::array<const typename Plan<T>::KernelDescriptor*, 3>& Plan<T>::builtin_kernels() {
+  static const std::array<const KernelDescriptor*, 3> list{
+      &baseline_kernel(), &stockham_kernel(),
+      detail::kExternalKernelAvailable ? &external_kernel() : nullptr};
+  return list;
 }
 
 } // namespace eigfft

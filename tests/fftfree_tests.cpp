@@ -2,6 +2,7 @@
 
 #include <Eigen/Core>
 
+#include <cmath>
 #include <complex>
 #include <random>
 #include <string>
@@ -58,12 +59,19 @@ bool test_roundtrip_small_batches() {
   eigfft::fft_inplace_batched<Scalar>(signal, forward_plan);
   eigfft::fft_inplace_batched<Scalar>(signal, inverse_plan);
 
-  using Complex64 = std::complex<double>;
-  const Eigen::Matrix<Complex64, Eigen::Dynamic, Eigen::Dynamic> signal64 =
-      signal.template cast<Complex64>();
-  const Eigen::Matrix<Complex64, Eigen::Dynamic, Eigen::Dynamic> original64 =
-      original.template cast<Complex64>();
-  const double max_error = (signal64 - original64).cwiseAbs().maxCoeff();
+  double max_error = 0.0;
+  for (int i = 0; i < N; ++i) {
+    for (int j = 0; j < B; ++j) {
+      const Complex current = signal(i, j);
+      const Complex reference = original(i, j);
+      const double re_err = static_cast<double>(current.real()) -
+                            static_cast<double>(reference.real());
+      const double im_err = static_cast<double>(current.imag()) -
+                            static_cast<double>(reference.imag());
+      const double mag = std::hypot(re_err, im_err);
+      if (mag > max_error) max_error = mag;
+    }
+  }
 
   const double tol = static_cast<double>(tolerance<Scalar>());
   return max_error < tol;
@@ -73,6 +81,31 @@ template <typename Scalar>
 bool test_effective_threads_reports_parallel() {
   eigfft::Plan<Scalar> plan(32, /*inverse=*/false, /*threads=*/true);
   return plan.effective_threads(64) >= 2;
+}
+
+template <typename Scalar>
+bool test_kernel_selection_interface() {
+  eigfft::Plan<Scalar> plan(32, /*inverse=*/false, /*threads=*/true);
+  bool ok = plan.use_kernel(eigfft::KernelKind::Baseline);
+  ok = ok && plan.kernel().kind == eigfft::KernelKind::Baseline;
+  ok = ok && plan.kernel_realtime_safe();
+  ok = ok && plan.kernel_accuracy() == eigfft::KernelAccuracy::Default;
+  ok = ok && plan.use_kernel("stockham-autosort");
+  ok = ok && plan.kernel().kind == eigfft::KernelKind::Stockham;
+  const bool external_available = eigfft::Plan<Scalar>::has_external_kernel();
+  const bool external_selected = plan.use_kernel("external-provider");
+  if (external_available) {
+    ok = ok && external_selected;
+    ok = ok && plan.kernel().kind == eigfft::KernelKind::External;
+    ok = ok && !plan.kernel_realtime_safe();
+    ok = ok && plan.kernel_accuracy() == eigfft::KernelAccuracy::HighPrecision;
+  } else {
+    ok = ok && !external_selected;
+    ok = ok && plan.kernel().kind == eigfft::KernelKind::Stockham;
+  }
+  ok = ok && !plan.use_kernel("nonexistent-kernel");
+  ok = ok && !plan.use_kernel(static_cast<eigfft::KernelKind>(99));
+  return ok;
 }
 
 #ifndef EIGFFT_ALLOW_SEQUENTIAL
@@ -97,6 +130,8 @@ void enqueue_precision_tests(std::vector<std::pair<std::string, bool>>& results)
                        test_roundtrip_small_batches<Scalar>());
   results.emplace_back("effective_threads_reports_parallel<" + tag + ">",
                        test_effective_threads_reports_parallel<Scalar>());
+  results.emplace_back("kernel_selection_interface<" + tag + ">",
+                       test_kernel_selection_interface<Scalar>());
 #ifndef EIGFFT_ALLOW_SEQUENTIAL
   results.emplace_back("sequential_path_rejected<" + tag + ">",
                        test_sequential_path_rejected<Scalar>());
