@@ -465,9 +465,10 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
     throw std::invalid_argument("AxisLayout axis_size must match Plan::N.");
   const int B = static_cast<int>(layout.batch_size);
   const int threads = P.effective_threads(B);
-  const int lane_cols = std::max(1, (P.tuning.packet_step > 0)
-                                      ? P.tuning.packet_step
-                                      : P.packet_cols);
+  const bool parallel_enabled = P.use_threads && threads > 1;
+  const int requested_lanes =
+      (P.tuning.packet_step > 0) ? P.tuning.packet_step : P.packet_cols;
+  const int lane_cols = std::max(1, requested_lanes);
   P.ensure_workspace(threads, std::max(B, lane_cols));
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
 
@@ -476,18 +477,9 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
   const Eigen::Index batch_stride = layout.batch_stride;
   const int* bitrev = P.bitrev.data();
 
-  if (P.use_threads && threads < 2) {
-#if defined(EIGFFT_ALLOW_SEQUENTIAL)
-    // Sequential override path will handle this below.
-#else
-    throw std::runtime_error(
-        "Parallel execution is mandatory; OpenMP reported a single usable thread. Define EIGFFT_ALLOW_SEQUENTIAL to permit fallback.");
-#endif
-  }
-
   bool permuted_in_parallel = false;
 #ifdef _OPENMP
-  if (P.use_threads && threads > 1) {
+  if (parallel_enabled) {
     permuted_in_parallel = true;
 #pragma omp parallel num_threads(threads)
     {
@@ -517,7 +509,6 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
   }
 #endif
   if (!permuted_in_parallel) {
-#if defined(EIGFFT_ALLOW_SEQUENTIAL)
     auto& columns = P.workspace.column_ptrs[0];
     for (int chunk = 0; chunk < chunk_count; ++chunk) {
       const int col = chunk * lane_cols;
@@ -538,10 +529,6 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
         }
       }
     }
-#else
-    throw std::runtime_error(
-        "Sequential permutation path disabled. Define EIGFFT_ALLOW_SEQUENTIAL to allow single-thread fallback.");
-#endif
   }
 
   for (int len = 2; len <= N; len <<= 1) {
@@ -551,55 +538,54 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
 
     bool butterflies_in_parallel = false;
 #ifdef _OPENMP
-  if (P.use_threads && threads > 1) {
-    butterflies_in_parallel = true;
+    if (parallel_enabled) {
+      butterflies_in_parallel = true;
 #pragma omp parallel num_threads(threads)
-    {
-      const int tid = omp_get_thread_num();
-      auto& a_cache = P.workspace.a_cache[tid];
-      auto& b_cache = P.workspace.b_cache[tid];
-      auto& columns = P.workspace.column_ptrs[tid];
-      Complex* a_ptr = a_cache.data();
-      Complex* b_ptr = b_cache.data();
-      const int work_items = half * blocks * chunk_count;
-      if (work_items > 0) {
+      {
+        const int tid = omp_get_thread_num();
+        auto& a_cache = P.workspace.a_cache[tid];
+        auto& b_cache = P.workspace.b_cache[tid];
+        auto& columns = P.workspace.column_ptrs[tid];
+        Complex* a_ptr = a_cache.data();
+        Complex* b_ptr = b_cache.data();
+        const int work_items = half * blocks * chunk_count;
+        if (work_items > 0) {
 #pragma omp for schedule(static)
-        for (int item = 0; item < work_items; ++item) {
-          int tmp = item;
-          const int chunk = tmp % chunk_count;
-          tmp /= chunk_count;
-          const int block = tmp % blocks;
-          const int k = tmp / blocks;
-          const int col = chunk * lane_cols;
-          const int width = std::min(lane_cols, B - col);
-          if (width <= 0) continue;
-          for (int lane = 0; lane < width; ++lane) {
-            const Eigen::Index batch_index = Eigen::Index(col + lane);
-            columns[lane] = layout.base + batch_index * batch_stride;
-          }
-          const int a_index = block * len + k;
-          const int b_index = a_index + half;
-          const Eigen::Index a_offset = Eigen::Index(a_index) * axis_stride;
-          const Eigen::Index b_offset = Eigen::Index(b_index) * axis_stride;
-          const Complex w = P.W[k * step];
-          for (int lane = 0; lane < width; ++lane) {
-            Complex* column_ptr = columns[lane];
-            a_ptr[lane] = column_ptr[a_offset];
-            b_ptr[lane] = column_ptr[b_offset];
-          }
-          detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w);
-          for (int lane = 0; lane < width; ++lane) {
-            Complex* column_ptr = columns[lane];
-            column_ptr[a_offset] = a_ptr[lane];
-            column_ptr[b_offset] = b_ptr[lane];
+          for (int item = 0; item < work_items; ++item) {
+            int tmp = item;
+            const int chunk = tmp % chunk_count;
+            tmp /= chunk_count;
+            const int block = tmp % blocks;
+            const int k = tmp / blocks;
+            const int col = chunk * lane_cols;
+            const int width = std::min(lane_cols, B - col);
+            if (width <= 0) continue;
+            for (int lane = 0; lane < width; ++lane) {
+              const Eigen::Index batch_index = Eigen::Index(col + lane);
+              columns[lane] = layout.base + batch_index * batch_stride;
+            }
+            const int a_index = block * len + k;
+            const int b_index = a_index + half;
+            const Eigen::Index a_offset = Eigen::Index(a_index) * axis_stride;
+            const Eigen::Index b_offset = Eigen::Index(b_index) * axis_stride;
+            const Complex w = P.W[k * step];
+            for (int lane = 0; lane < width; ++lane) {
+              Complex* column_ptr = columns[lane];
+              a_ptr[lane] = column_ptr[a_offset];
+              b_ptr[lane] = column_ptr[b_offset];
+            }
+            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w);
+            for (int lane = 0; lane < width; ++lane) {
+              Complex* column_ptr = columns[lane];
+              column_ptr[a_offset] = a_ptr[lane];
+              column_ptr[b_offset] = b_ptr[lane];
+            }
           }
         }
       }
     }
-  }
 #endif
     if (!butterflies_in_parallel) {
-#if defined(EIGFFT_ALLOW_SEQUENTIAL)
       auto& a_cache = P.workspace.a_cache[0];
       auto& b_cache = P.workspace.b_cache[0];
       auto& columns = P.workspace.column_ptrs[0];
@@ -635,10 +621,6 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
           }
         }
       }
-#else
-      throw std::runtime_error(
-          "Sequential butterfly path disabled. Define EIGFFT_ALLOW_SEQUENTIAL to allow single-thread fallback.");
-#endif
     }
   }
 
