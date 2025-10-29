@@ -42,6 +42,12 @@ inline constexpr bool kAllowSequentialFallback = true;
 inline constexpr bool kAllowSequentialFallback = false;
 #endif
 
+#if defined(EIGFFT_ENABLE_EXTERNAL_KERNEL)
+inline constexpr bool kExternalKernelAvailable = true;
+#else
+inline constexpr bool kExternalKernelAvailable = false;
+#endif
+
 template <class T>
 struct ButterflyKernel {
   using Complex = std::complex<T>;
@@ -382,6 +388,10 @@ template<class T> struct Plan {
   static const KernelDescriptor& external_kernel();
   static const std::array<const KernelDescriptor*, 3>& builtin_kernels();
 
+  static constexpr bool has_external_kernel() {
+    return detail::kExternalKernelAvailable;
+  }
+
  private:
   void release_kernel() {
     if (kernel_desc_ && kernel_desc_->destroy_state && kernel_state_) {
@@ -398,7 +408,10 @@ template<class T> struct Plan {
       case KernelKind::Stockham:
         return &stockham_kernel();
       case KernelKind::External:
-        return &external_kernel();
+        if (detail::kExternalKernelAvailable) {
+          return &external_kernel();
+        }
+        return nullptr;
     }
     return nullptr;
   }
@@ -814,9 +827,9 @@ const typename Plan<T>::KernelDescriptor& Plan<T>::external_kernel() {
       "external-provider",
       KernelAccuracy::HighPrecision,
       false,
-      detail::external_create_state<T>,
-      detail::external_execute_axis<T>,
-      detail::external_destroy_state<T>
+      detail::kExternalKernelAvailable ? detail::external_create_state<T> : nullptr,
+      detail::kExternalKernelAvailable ? detail::external_execute_axis<T> : nullptr,
+      detail::kExternalKernelAvailable ? detail::external_destroy_state<T> : nullptr
   };
   return desc;
 }
@@ -824,7 +837,8 @@ const typename Plan<T>::KernelDescriptor& Plan<T>::external_kernel() {
 template<class T>
 const std::array<const typename Plan<T>::KernelDescriptor*, 3>& Plan<T>::builtin_kernels() {
   static const std::array<const KernelDescriptor*, 3> list{
-      &baseline_kernel(), &stockham_kernel(), &external_kernel()};
+      &baseline_kernel(), &stockham_kernel(),
+      detail::kExternalKernelAvailable ? &external_kernel() : nullptr};
   return list;
 }
 

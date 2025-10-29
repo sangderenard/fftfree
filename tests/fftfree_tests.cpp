@@ -92,10 +92,17 @@ bool test_kernel_selection_interface() {
   ok = ok && plan.kernel_accuracy() == eigfft::KernelAccuracy::Default;
   ok = ok && plan.use_kernel("stockham-autosort");
   ok = ok && plan.kernel().kind == eigfft::KernelKind::Stockham;
-  ok = ok && plan.use_kernel("external-provider");
-  ok = ok && plan.kernel().kind == eigfft::KernelKind::External;
-  ok = ok && !plan.kernel_realtime_safe();
-  ok = ok && plan.kernel_accuracy() == eigfft::KernelAccuracy::HighPrecision;
+  const bool external_available = eigfft::Plan<Scalar>::has_external_kernel();
+  const bool external_selected = plan.use_kernel("external-provider");
+  if (external_available) {
+    ok = ok && external_selected;
+    ok = ok && plan.kernel().kind == eigfft::KernelKind::External;
+    ok = ok && !plan.kernel_realtime_safe();
+    ok = ok && plan.kernel_accuracy() == eigfft::KernelAccuracy::HighPrecision;
+  } else {
+    ok = ok && !external_selected;
+    ok = ok && plan.kernel().kind == eigfft::KernelKind::Stockham;
+  }
   ok = ok && !plan.use_kernel("nonexistent-kernel");
   ok = ok && !plan.use_kernel(static_cast<eigfft::KernelKind>(99));
   return ok;
