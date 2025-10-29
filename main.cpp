@@ -50,6 +50,26 @@ static const std::vector<BenchmarkCase> kCases{
     {4096, 32, 4},
 };
 
+struct AlgorithmSpec {
+  eigfft::KernelKind kind;
+  const char* label;
+};
+
+static const std::vector<AlgorithmSpec> kAlgorithms{
+    {eigfft::KernelKind::Baseline, "baseline-cooleytukey"},
+    {eigfft::KernelKind::Stockham, "stockham-autosort"},
+};
+
+struct LaneVariant {
+  const char* label;
+  int packet_step;  // 0 => auto, otherwise explicit lane width.
+};
+
+static const std::vector<LaneVariant> kLaneVariants{
+    {"lanes=1", 1},
+    {"lanes=auto", 0},
+};
+
 inline std::string to_lower(std::string value) {
   for (char& ch : value) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
   return value;
@@ -246,29 +266,50 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
     MatrixXc seed(task.N, task.B);
     fill_random(seed, rng);
 
-    eigfft::Plan<Scalar> baseline_plan(task.N, /*inverse=*/false, /*threads=*/true);
-    baseline_plan.tuning.packet_step = 1;
-    baseline_plan.tuning.parallel_dim = eigfft::Plan<Scalar>::ParallelDim::Columns;
-    baseline_plan.tuning.min_work_per_thread = 32;
-    baseline_plan.tuning.force_ftz_daz = false;
+    for (const auto& algo : kAlgorithms) {
+      std::cout << "  Algorithm: " << algo.label << std::endl;
+      double reference_time = 0.0;
+      const char* reference_label = nullptr;
+      bool reference_set = false;
 
-    eigfft::Plan<Scalar> simd_plan(task.N, /*inverse=*/false, /*threads=*/true);
-    simd_plan.tuning.packet_step = 0;
-    simd_plan.tuning.parallel_dim = eigfft::Plan<Scalar>::ParallelDim::Columns;
-    simd_plan.tuning.min_work_per_thread = 32;
-    simd_plan.tuning.force_ftz_daz = false;
+      for (const auto& lanes : kLaneVariants) {
+        eigfft::Plan<Scalar> plan(task.N, /*inverse=*/false, /*threads=*/true);
+        plan.tuning.packet_step = lanes.packet_step;
+        plan.tuning.parallel_dim = eigfft::Plan<Scalar>::ParallelDim::Columns;
+        plan.tuning.min_work_per_thread = 32;
+        plan.tuning.force_ftz_daz = false;
+        if (algo.kind == eigfft::KernelKind::Stockham) {
+          plan.requested_threads = 4;
+        }
 
-    const double baseline_time = run_plan(seed, baseline_plan, task.repeats);
-    const double simd_time = run_plan(seed, simd_plan, task.repeats);
+        if (!plan.use_kernel(algo.kind)) {
+          std::cout << "    " << lanes.label << ": unavailable (kernel unsupported)" << std::endl;
+          continue;
+        }
 
-    std::cout << "  baseline (lanes=1)         : " << baseline_time << " s" << std::endl;
-    std::cout << "  simd+threads (lanes=" << simd_plan.packet_cols
-              << ", max threads=" << simd_plan.effective_threads(task.B)
-              << ") : " << simd_time << " s" << std::endl;
-    if (simd_time < baseline_time) {
-      std::cout << "    speedup: " << (baseline_time / simd_time) << "x" << std::endl;
-    } else {
-      std::cout << "    slowdown: " << (simd_time / baseline_time) << "x" << std::endl;
+        const double elapsed = run_plan(seed, plan, task.repeats);
+        const int lanes_used = (plan.tuning.packet_step > 0) ? plan.tuning.packet_step : plan.packet_cols;
+        const int max_threads = plan.effective_threads(task.B);
+
+        std::cout << "    " << lanes.label << " (lanes=" << lanes_used
+                  << ", max threads=" << max_threads << ") : " << elapsed << " s";
+
+        if (!reference_set) {
+          reference_time = elapsed;
+          reference_label = lanes.label;
+          reference_set = true;
+          std::cout << std::endl;
+        } else {
+          if (elapsed < reference_time && elapsed > 0.0) {
+            std::cout << "  [speedup vs " << reference_label << ": "
+                      << (reference_time / elapsed) << "x]";
+          } else if (elapsed > reference_time && reference_time > 0.0) {
+            std::cout << "  [slowdown vs " << reference_label << ": "
+                      << (elapsed / reference_time) << "x]";
+          }
+          std::cout << std::endl;
+        }
+      }
     }
   }
 

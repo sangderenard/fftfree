@@ -115,12 +115,22 @@ class WorkerPool {
       job_.chunk = chunk_size;
       job_.chunk_count = chunk_count;
       job_.next.store(0, std::memory_order_relaxed);
-      job_.pending.store(worker_count_, std::memory_order_relaxed);
+      // Count main + workers; everyone decrements once when done draining.
+      job_.pending.store(worker_count_ + 1, std::memory_order_relaxed);
       job_.active = true;
     }
     cv_job_.notify_all();
 
     drain_chunks(0);
+    // Main thread finished its share: decrement pending and possibly close job.
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      const int remaining = job_.pending.fetch_sub(1, std::memory_order_acq_rel);
+      if (remaining == 1) {
+        job_.active = false;
+        cv_done_.notify_one();
+      }
+    }
 
     std::unique_lock<std::mutex> lock(mutex_);
     cv_done_.wait(lock, [&] { return !job_.active; });
@@ -970,59 +980,6 @@ template<class T>
 void baseline_destroy_state(Plan<T>&, KernelContext*) {}
 
 template<class T>
-struct StockhamKernelState final : KernelContext {
-  using Complex = std::complex<T>;
-  struct ThreadBuffers {
-    std::vector<Complex*> column_ptrs;
-    std::vector<Complex> a_cache;
-    std::vector<Complex> b_cache;
-  };
-
-  void ensure(int desired_threads, int desired_lane_capacity) {
-    desired_threads = std::max(1, desired_threads);
-    desired_lane_capacity = std::max(1, desired_lane_capacity);
-    if (desired_threads != threads_) {
-      threads_ = desired_threads;
-      buffers_.resize(threads_);
-      if (threads_ > 1) {
-        pool_ = std::make_unique<ThreadPool>(threads_);
-      } else {
-        pool_.reset();
-      }
-      if (lane_capacity_ > 0) {
-        for (auto& buf : buffers_) {
-          resize_buffers(buf, lane_capacity_);
-        }
-      }
-    }
-    if (desired_lane_capacity > lane_capacity_) {
-      lane_capacity_ = desired_lane_capacity;
-      for (auto& buf : buffers_) {
-        resize_buffers(buf, lane_capacity_);
-      }
-    }
-  }
-
-  int thread_count() const { return threads_; }
-  int lane_capacity() const { return lane_capacity_; }
-  ThreadPool* pool() const { return pool_.get(); }
-
-  ThreadBuffers& buffers(int thread_id) { return buffers_[thread_id]; }
-
- private:
-  static void resize_buffers(ThreadBuffers& buf, int lanes) {
-    buf.column_ptrs.resize(lanes);
-    buf.a_cache.resize(lanes);
-    buf.b_cache.resize(lanes);
-  }
-
-  int threads_ = 1;
-  int lane_capacity_ = 0;
-  std::unique_ptr<ThreadPool> pool_;
-  std::vector<ThreadBuffers> buffers_;
-};
-
-template<class T>
 void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx) {
   using Complex = typename Plan<T>::Complex;
   if (!layout.valid()) {
@@ -1062,24 +1019,53 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     if (start >= static_cast<size_t>(B)) return;
     const int width = static_cast<int>(end - start);
     if (width <= 0) return;
+    if (width > lane_capacity) {
+      std::cerr << "[stockham debug] width exceeds lane_capacity: width=" << width
+                << " lane_capacity=" << lane_capacity << " start=" << start
+                << " end=" << end << std::endl;
+      std::abort();
+    }
+    // std::cerr << "[stockham debug] chunk start=" << start << " end=" << end
+    //           << " worker=" << worker_id << " width=" << width << std::endl;
     size_t slot = static_cast<size_t>(worker_id);
     if (slot >= state->scratch.size()) {
       slot = state->scratch.empty() ? size_t(0) : state->scratch.size() - 1;
     }
     auto& scratch = state->scratch[slot];
     auto* columns = scratch.columns.data();
+    const ptrdiff_t max_offset = (layout.batch_size > 0 && layout.axis_size > 0)
+                                     ? ((layout.batch_size - 1) * layout.batch_stride +
+                                        (layout.axis_size - 1) * layout.axis_stride)
+                                     : 0;
     for (int lane = 0; lane < width; ++lane) {
       const Eigen::Index batch_index = Eigen::Index(start + lane);
       columns[lane] = layout.base + batch_index * batch_stride;
+      const ptrdiff_t delta = columns[lane] - layout.base;
+      if (delta < 0 || delta > max_offset) {
+        std::cerr << "[stockham debug] column out of bounds: lane=" << lane
+                  << " batch_index=" << batch_index << " width=" << width
+                  << " delta=" << delta << " max_offset=" << max_offset
+                  << std::endl;
+        std::abort();
+      }
     }
 
     Complex* stage_in = scratch.ping.data();
     Complex* stage_out = scratch.pong.data();
+    const int safe_width = std::min(width, state->lane_capacity);
     for (int i = 0; i < N; ++i) {
-      const Eigen::Index offset = Eigen::Index(i) * axis_stride;
-      Complex* dest = stage_in + i * lane_capacity;
-      for (int lane = 0; lane < width; ++lane) {
-        dest[lane] = columns[lane][offset];
+      const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
+      Complex* dest = stage_in + i * state->lane_capacity;
+      for (int lane = 0; lane < safe_width; ++lane) {
+        const ptrdiff_t base_idx = columns[lane] - layout.base;      // in Complex units
+        const ptrdiff_t idx      = base_idx + off;
+        if (idx < 0 || idx > max_offset) {
+          std::cerr << "[stockham] load OOB: lane=" << lane
+                    << " i=" << i << " idx=" << idx
+                    << " max=" << max_offset << std::endl;
+          std::abort();
+        }
+        dest[lane] = columns[lane][off];
       }
     }
 
@@ -1110,18 +1096,34 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     if (P.inverse) {
       const T scale = T(1) / T(N);
       for (int i = 0; i < N; ++i) {
-        const Eigen::Index offset = Eigen::Index(i) * axis_stride;
-        const Complex* src = final_buf + i * lane_capacity;
-        for (int lane = 0; lane < width; ++lane) {
-          columns[lane][offset] = src[lane] * scale;
+        const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
+        const Complex* src = final_buf + i * state->lane_capacity;
+        for (int lane = 0; lane < safe_width; ++lane) {
+          const ptrdiff_t base_idx = columns[lane] - layout.base;
+          const ptrdiff_t idx      = base_idx + off;
+          if (idx < 0 || idx > max_offset) {
+            std::cerr << "[stockham] store OOB(inv): lane=" << lane
+                      << " i=" << i << " idx=" << idx
+                      << " max=" << max_offset << std::endl;
+            std::abort();
+          }
+          columns[lane][off] = src[lane] * scale;
         }
       }
     } else {
       for (int i = 0; i < N; ++i) {
-        const Eigen::Index offset = Eigen::Index(i) * axis_stride;
-        const Complex* src = final_buf + i * lane_capacity;
-        for (int lane = 0; lane < width; ++lane) {
-          columns[lane][offset] = src[lane];
+        const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
+        const Complex* src = final_buf + i * state->lane_capacity;
+        for (int lane = 0; lane < safe_width; ++lane) {
+          const ptrdiff_t base_idx = columns[lane] - layout.base;
+          const ptrdiff_t idx      = base_idx + off;
+          if (idx < 0 || idx > max_offset) {
+            std::cerr << "[stockham] store OOB: lane=" << lane
+                      << " i=" << i << " idx=" << idx
+                      << " max=" << max_offset << std::endl;
+            std::abort();
+          }
+          columns[lane][off] = src[lane];
         }
       }
     }
