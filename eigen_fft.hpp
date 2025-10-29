@@ -466,9 +466,9 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
   const int B = static_cast<int>(layout.batch_size);
   const int threads = P.effective_threads(B);
   const bool parallel_enabled = P.use_threads && threads > 1;
-  const int lane_cols = std::max(1, (P.tuning.packet_step > 0)
-                                        ? P.tuning.packet_step
-                                        : P.packet_cols);
+  const int requested_lanes =
+      (P.tuning.packet_step > 0) ? P.tuning.packet_step : P.packet_cols;
+  const int lane_cols = std::max(1, requested_lanes);
   P.ensure_workspace(threads, std::max(B, lane_cols));
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
 
