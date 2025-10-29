@@ -23,6 +23,21 @@ endif()
 option(FFTFREE_OPENMP "Enable OpenMP" ON)
 option(FFTFREE_FAST_MATH "Enable fast-math" ON)
 
+# Detect the highest SIMD level supported by MSVC when AUTO is requested.
+set(FFTFREE_MSVC_AUTO_ARCH_FLAG "")
+if (MSVC AND FFTFREE_NATIVE AND FFTFREE_NATIVE_ARCH STREQUAL "AUTO")
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("/arch:AVX2" FFTFREE_MSVC_HAS_AVX2)
+  if (FFTFREE_MSVC_HAS_AVX2)
+    set(FFTFREE_MSVC_AUTO_ARCH_FLAG "/arch:AVX2")
+  else()
+    check_cxx_compiler_flag("/arch:AVX" FFTFREE_MSVC_HAS_AVX)
+    if (FFTFREE_MSVC_HAS_AVX)
+      set(FFTFREE_MSVC_AUTO_ARCH_FLAG "/arch:AVX")
+    endif()
+  endif()
+endif()
+
 # Fetch Eigen
 include(FetchContent)
 FetchContent_Declare(
@@ -52,8 +67,12 @@ function(fftfree_apply_target_options target)
     set(_fftf_native_flag "")
     if (FFTFREE_NATIVE)
       if (FFTFREE_NATIVE_ARCH STREQUAL "AUTO")
-        # MSVC defaults to the highest ISA supported by the target platform
-        set(_fftf_native_flag "")
+        if (FFTFREE_MSVC_AUTO_ARCH_FLAG)
+          set(_fftf_native_flag ${FFTFREE_MSVC_AUTO_ARCH_FLAG})
+        else()
+          # MSVC defaults to the highest ISA supported by the target platform
+          set(_fftf_native_flag "")
+        endif()
       elseif (FFTFREE_NATIVE_ARCH STREQUAL "AVX2")
         set(_fftf_native_flag "/arch:AVX2")
       elseif (FFTFREE_NATIVE_ARCH STREQUAL "AVX")
