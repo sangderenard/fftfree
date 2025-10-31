@@ -207,6 +207,10 @@ function(fftfree_apply_target_options target)
   endif()
 endfunction()
 
+
+add_library(fft_cffi SHARED fft_cffi.cpp eigen_fft.hpp plan_support.hpp butterfly/butterfly_base.hpp butterfly/butterfly_factory.hpp butterfly/butterfly_radix2_dit.hpp butterfly/butterfly_radix2_dif.hpp butterfly/butterfly_radix4_dit.hpp)
+fftfree_apply_target_options(fft_cffi)
+
 add_executable(fft_example main.cpp)
 fftfree_apply_target_options(fft_example)
 

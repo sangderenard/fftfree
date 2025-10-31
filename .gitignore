@@ -9,3 +9,4 @@ build
 *.obj
 build/Release/fft_example.exe
 build/fft_example.dir/Release/main.obj
+MegaMix.wav
