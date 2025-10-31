@@ -35,6 +35,7 @@ ctest --output-on-failure
 
 ```cpp
 #include "eigen_fft.hpp"
+#include "plan_support.hpp"
 #include <Eigen/Core>
 
 int main() {
@@ -44,12 +45,14 @@ int main() {
   Eigen::MatrixXcd X(N, B); // Complex matrix, rows=time/freq, cols=batch
   // Fill X with time-domain data...
 
-  eigfft::Plan<double> plan(N, false, true); // N, inverse=false, threads=true
-  eigfft::fft_inplace_batched<double>(X, plan); // Now frequency-domain
+  eigfft::PlanRuntimeConfig cfg;   // defaults: 4 threads, 2 Stockham lanes
+  eigfft::PlanEnvironment<double> forward_env;
+  forward_env.initialize(N, /*inverse=*/false, cfg);
+  eigfft::fft_inplace_batched<double>(X, forward_env.plan()); // Now frequency-domain
 
-  // For inverse
-  eigfft::Plan<double> iplan(N, true, true);
-  eigfft::fft_inplace_batched<double>(X, iplan); // Back to time-domain
+  eigfft::PlanEnvironment<double> inverse_env;
+  inverse_env.initialize(N, /*inverse=*/true, cfg);
+  eigfft::fft_inplace_batched<double>(X, inverse_env.plan()); // Back to time-domain
 }
 ```
 
@@ -73,7 +76,7 @@ The demo binary can simulate a streaming workload after the micro-benchmarks to
 measure sustained frame/sample rates. Enable it with `--realtime` and adjust the
 parameters as needed:
 
-```
+```bash
 fft_example --rt \
   --rt-sample-rate=48000 \
   --rt-window=2048 \

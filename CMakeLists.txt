@@ -1,3 +1,21 @@
+# Maximum optimization flags for Release configuration
+if (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+  if (MSVC)
+    set(_fftfree_native_flag "")
+    if (FFTFREE_NATIVE)
+      if (FFTFREE_NATIVE_ARCH STREQUAL "AVX2")
+        set(_fftfree_native_flag "/arch:AVX2")
+      elseif (FFTFREE_NATIVE_ARCH STREQUAL "AVX")
+        set(_fftfree_native_flag "/arch:AVX")
+      elseif (FFTFREE_NATIVE_ARCH STREQUAL "SSE2")
+        set(_fftfree_native_flag "/arch:SSE2")
+      endif()
+    endif()
+    add_compile_options($<$<CONFIG:Release>:/O2 /fp:fast ${_fftfree_native_flag} /DNDEBUG>)
+  else()
+    add_compile_options($<$<CONFIG:Release>:-O3 -ffast-math -march=native -DNDEBUG>)
+  endif()
+endif()
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.14)  # FetchContent requires 3.11+, but 3.14 for better support
 project(fftfree)
@@ -71,6 +89,7 @@ if (MSVC AND FFTFREE_NATIVE AND FFTFREE_NATIVE_ARCH STREQUAL "AUTO")
   unset(_fftfree_detect_src)
 endif()
 
+
 # Fetch Eigen
 include(FetchContent)
 FetchContent_Declare(
@@ -79,6 +98,18 @@ FetchContent_Declare(
   GIT_TAG 3.4.0
 )
 FetchContent_MakeAvailable(eigen)
+
+# Enable LTO for Release builds
+if (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT lto_supported OUTPUT lto_output)
+  if(lto_supported)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+    message(STATUS "LTO enabled for Release build.")
+  else()
+    message(WARNING "LTO not supported: ${lto_output}")
+  endif()
+endif()
 
 include(CTest)
 enable_testing()

@@ -1,0 +1,497 @@
+#pragma once
+
+#include "eigen_fft.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <limits>
+#include <memory>
+#include <stdexcept>
+#include <unordered_map>
+#include <vector>
+#include <mutex>
+#include <thread>
+
+namespace eigfft {
+
+struct PlanRuntimeConfig {
+  int threads = 4;
+  int lanes = 2;
+  std::size_t transpose_capacity = 0;
+  bool inverse = false;
+};
+
+template <class Scalar>
+class PlanEnvironment {
+ public:
+  using Complex = std::complex<Scalar>;
+
+  PlanEnvironment() = default;
+
+  void initialize(int N, bool inverse, const PlanRuntimeConfig& cfg) {
+    // Enforce one-shot plan usage: if a previous plan exists, discard it.
+    plan_.reset();
+    initialize(N, inverse, cfg, cfg.transpose_capacity);
+  }
+
+  void initialize(int N, bool inverse, const PlanRuntimeConfig& cfg, std::size_t transpose_elements) {
+    const int max_threads = Plan<Scalar>::Limits::kCompileTimeMaxThreads;
+    const int clamped_threads = std::clamp(cfg.threads, 1, max_threads);
+    const int max_lanes = Plan<Scalar>::Limits::compile_time_max_lane_capacity();
+    const int clamped_lanes = std::clamp(cfg.lanes, 1, max_lanes);
+
+    const auto shape = compute_plan_arena_shape<Scalar>(N, clamped_threads, clamped_lanes);
+
+    twiddles_.resize(shape.twiddles);
+    bitrev_.resize(shape.bitrev);
+    baseline_a_.resize(shape.baseline_complex);
+    baseline_b_.resize(shape.baseline_complex);
+    baseline_columns_.resize(shape.baseline_columns);
+    std::fill(baseline_columns_.begin(), baseline_columns_.end(), nullptr);
+    stockham_ping_.resize(shape.stockham_stage);
+    stockham_pong_.resize(shape.stockham_stage);
+    stockham_lane_bases_.resize(shape.stockham_lane_bases);
+    nd_transpose_.resize(transpose_elements);
+
+    arena_.twiddles = twiddles_.data();
+    arena_.twiddle_count = narrow_int(shape.twiddles);
+    arena_.bitrev = bitrev_.data();
+    arena_.bitrev_count = narrow_int(shape.bitrev);
+    arena_.baseline_a = baseline_a_.data();
+    arena_.baseline_b = baseline_b_.data();
+    arena_.baseline_columns = baseline_columns_.data();
+    arena_.baseline_thread_capacity = clamped_threads;
+    arena_.baseline_lane_capacity = clamped_lanes;
+    arena_.stockham_ping = stockham_ping_.data();
+    arena_.stockham_pong = stockham_pong_.data();
+    arena_.stockham_lane_bases = stockham_lane_bases_.data();
+    arena_.stockham_thread_capacity = clamped_threads;
+    arena_.stockham_lane_capacity = clamped_lanes;
+    arena_.nd_transpose = nd_transpose_.empty() ? nullptr : nd_transpose_.data();
+    arena_.nd_transpose_capacity = nd_transpose_.size();
+
+    plan_ = std::make_unique<Plan<Scalar>>(N, arena_, inverse, true, clamped_threads);
+    plan_->set_arena_resizer(&PlanEnvironment::ResizeArena);
+    plan_->workspace.bind(*plan_);
+    plan_->pending_nd_capacity = 0;
+    threads_ = clamped_threads;
+    lanes_ = clamped_lanes;
+  }
+
+  Plan<Scalar>& plan() {
+    if (!plan_) {
+      throw std::logic_error("PlanEnvironment not initialized");
+    }
+    return *plan_;
+  }
+
+  // Explicitly discard the current plan to enforce single-use semantics.
+  void discard_plan() {
+    plan_.reset();
+  }
+
+  const Plan<Scalar>& plan() const {
+    if (!plan_) {
+      throw std::logic_error("PlanEnvironment not initialized");
+    }
+    return *plan_;
+  }
+
+  PlanArena<Scalar>& arena() { return arena_; }
+  const PlanArena<Scalar>& arena() const { return arena_; }
+
+  int threads() const { return threads_; }
+  int lanes() const { return lanes_; }
+
+ private:
+  static void ResizeArena(PlanArena<Scalar>& arena, int N, int threads, int lanes) {
+    PlanEnvironment* self = owner_from_arena(arena);
+    if (!self) return;
+    self->resize_arena_impl(N, threads, lanes);
+  }
+
+  static PlanEnvironment* owner_from_arena(PlanArena<Scalar>& arena) {
+    return reinterpret_cast<PlanEnvironment*>(reinterpret_cast<char*>(&arena) - offsetof(PlanEnvironment, arena_));
+  }
+
+  static int narrow_int(std::size_t value) {
+    if (value > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+      throw std::overflow_error("PlanArena size exceeds 32-bit bounds");
+    }
+    return static_cast<int>(value);
+  }
+
+  void resize_arena_impl(int N, int threads, int lanes) {
+    const int clamped_threads = std::clamp(threads, 1, Plan<Scalar>::Limits::kCompileTimeMaxThreads);
+    const int clamped_lanes = std::clamp(lanes, 1, Plan<Scalar>::Limits::compile_time_max_lane_capacity());
+    const auto shape = compute_plan_arena_shape<Scalar>(N, clamped_threads, clamped_lanes);
+    const std::size_t requested_nd = plan_ ? plan_->pending_nd_capacity : 0;
+
+    twiddles_.resize(shape.twiddles);
+    bitrev_.resize(shape.bitrev);
+    baseline_a_.resize(shape.baseline_complex);
+    baseline_b_.resize(shape.baseline_complex);
+    baseline_columns_.resize(shape.baseline_columns);
+    std::fill(baseline_columns_.begin(), baseline_columns_.end(), nullptr);
+    stockham_ping_.resize(shape.stockham_stage);
+    stockham_pong_.resize(shape.stockham_stage);
+    stockham_lane_bases_.resize(shape.stockham_lane_bases);
+    if (requested_nd > nd_transpose_.size()) {
+      nd_transpose_.resize(requested_nd);
+    }
+
+    // Handle special per-slot buffers requested by Plan (if any). The Plan may
+    // set pending_special_capacity[] prior to calling the resizer; honor those
+    // requests by resizing per-slot vectors here and updating the arena
+    // metadata pointers/capacities/strides.
+    for (int slot = 0; slot < static_cast<int>(PlanArena<Scalar>::kMaxSpecialBuffers); ++slot) {
+      std::size_t req = 0;
+      if (plan_) {
+        req = plan_->pending_special_capacity[static_cast<size_t>(slot)];
+      }
+      if (req > special_buffers_[static_cast<size_t>(slot)].size()) {
+        special_buffers_[static_cast<size_t>(slot)].resize(req);
+      }
+    }
+
+    arena_.twiddles = twiddles_.data();
+    arena_.twiddle_count = narrow_int(shape.twiddles);
+    arena_.bitrev = bitrev_.data();
+    arena_.bitrev_count = narrow_int(shape.bitrev);
+    arena_.baseline_a = baseline_a_.data();
+    arena_.baseline_b = baseline_b_.data();
+    arena_.baseline_columns = baseline_columns_.data();
+    arena_.baseline_thread_capacity = clamped_threads;
+    arena_.baseline_lane_capacity = clamped_lanes;
+    arena_.stockham_ping = stockham_ping_.data();
+    arena_.stockham_pong = stockham_pong_.data();
+    arena_.stockham_lane_bases = stockham_lane_bases_.data();
+    arena_.stockham_thread_capacity = clamped_threads;
+    arena_.stockham_lane_capacity = clamped_lanes;
+    arena_.nd_transpose = nd_transpose_.empty() ? nullptr : nd_transpose_.data();
+    arena_.nd_transpose_capacity = nd_transpose_.size();
+
+    // Publish special buffer pointers and capacities into the arena.
+    for (int slot = 0; slot < static_cast<int>(PlanArena<Scalar>::kMaxSpecialBuffers); ++slot) {
+      auto& vec = special_buffers_[static_cast<size_t>(slot)];
+      arena_.special_buf[slot] = vec.empty() ? nullptr : vec.data();
+      arena_.special_capacity[slot] = vec.size();
+      arena_.special_stride[slot] = vec.empty() ? 0 : static_cast<std::ptrdiff_t>(1);
+      // Clear pending request if we satisfied it.
+      if (plan_) plan_->pending_special_capacity[static_cast<size_t>(slot)] = 0;
+    }
+
+    threads_ = clamped_threads;
+    lanes_ = clamped_lanes;
+
+    if (plan_) {
+      plan_->W = arena_.twiddles;
+      plan_->bitrev = arena_.bitrev;
+      plan_->requested_threads = std::min(plan_->requested_threads, clamped_threads);
+      plan_->workspace.bind(*plan_);
+      plan_->workspace.threads = std::max(1, std::min(plan_->workspace.threads, clamped_threads));
+      plan_->workspace.capacity = std::max(1, std::min(plan_->workspace.capacity, clamped_lanes));
+      plan_->pending_nd_capacity = 0;
+      // ensure any pending special capacity flags are cleared after allocation
+      for (int slot = 0; slot < static_cast<int>(PlanArena<Scalar>::kMaxSpecialBuffers); ++slot) {
+        plan_->pending_special_capacity[static_cast<size_t>(slot)] = 0;
+      }
+    }
+  }
+
+  PlanArena<Scalar> arena_{};
+  std::vector<Complex> twiddles_;
+  std::vector<int> bitrev_;
+  std::vector<Complex> baseline_a_;
+  std::vector<Complex> baseline_b_;
+  std::vector<Complex*> baseline_columns_;
+  std::vector<Complex> stockham_ping_;
+  std::vector<Complex> stockham_pong_;
+  std::vector<std::ptrdiff_t> stockham_lane_bases_;
+  std::vector<Complex> nd_transpose_;
+  // Per-slot special buffers for algorithm-specific scratch. These back the
+  // PlanArena::special_buf[] pointers to provide fast fixed-slot access.
+  std::array<std::vector<Complex>, PlanArena<Scalar>::kMaxSpecialBuffers> special_buffers_{};
+  std::unique_ptr<Plan<Scalar>> plan_;
+  int threads_ = 1;
+  int lanes_ = 1;
+};
+
+// Thread-safe plan cache for efficient reuse
+template <class Scalar>
+class PlanCache {
+ public:
+  using Complex = std::complex<Scalar>;
+
+  struct PlanKey {
+    int N;
+    bool inverse;
+    int threads;
+    int lanes;
+    std::size_t transpose_capacity;
+
+    bool operator==(const PlanKey& other) const {
+      return N == other.N && inverse == other.inverse &&
+             threads == other.threads && lanes == other.lanes &&
+             transpose_capacity == other.transpose_capacity;
+    }
+  };
+
+  struct PlanKeyHash {
+    std::size_t operator()(const PlanKey& key) const {
+      std::size_t h = 0;
+      h = h * 31 + std::hash<int>()(key.N);
+      h = h * 31 + std::hash<bool>()(key.inverse);
+      h = h * 31 + std::hash<int>()(key.threads);
+      h = h * 31 + std::hash<int>()(key.lanes);
+      h = h * 31 + std::hash<std::size_t>()(key.transpose_capacity);
+      return h;
+    }
+  };
+
+  // Token representing thread ownership of a cached plan
+  class Token {
+   public:
+    Token() = default;
+    Token(const Token&) = delete;
+    Token& operator=(const Token&) = delete;
+    Token(Token&& other) noexcept
+        : cache_(other.cache_), key_(other.key_), index_(other.index_), plan_(other.plan_),
+          valid_(other.valid_) {
+      other.valid_ = false;
+      other.plan_ = nullptr;
+    }
+    Token& operator=(Token&& other) noexcept {
+      if (this != &other) {
+        release();
+        cache_ = other.cache_;
+        key_ = other.key_;
+        index_ = other.index_;
+        plan_ = other.plan_;
+        valid_ = other.valid_;
+        other.valid_ = false;
+        other.plan_ = nullptr;
+      }
+      return *this;
+    }
+    ~Token() { release(); }
+
+    bool valid() const { return valid_; }
+    Plan<Scalar>& plan() {
+      if (!valid_ || !plan_) throw std::logic_error("Token is not valid");
+      return *plan_;
+    }
+    const Plan<Scalar>& plan() const {
+      if (!valid_ || !plan_) throw std::logic_error("Token is not valid");
+      return *plan_;
+    }
+
+   private:
+    friend class PlanCache;
+    Token(PlanCache* cache, PlanKey key, std::size_t index, Plan<Scalar>* plan)
+        : cache_(cache), key_(key), index_(index), plan_(plan), valid_(true) {}
+
+    void release() {
+      if (valid_ && cache_) {
+        cache_->release_token(key_, index_);
+      }
+      valid_ = false;
+      plan_ = nullptr;
+    }
+
+    PlanCache* cache_ = nullptr;
+    PlanKey key_;
+    std::size_t index_ = 0;
+    Plan<Scalar>* plan_ = nullptr;
+    bool valid_ = false;
+  };
+
+  PlanCache() = default;
+  ~PlanCache() = default;
+
+  // Get or create a plan for the given configuration. Each token owns an
+  // exclusive plan instance so call sites never share scratch buffers.
+  Token get_plan(int N, bool inverse, const PlanRuntimeConfig& cfg) {
+    auto runtime_cfg = normalize_config(cfg);
+    PlanKey key{N, inverse, runtime_cfg.threads, runtime_cfg.lanes,
+                runtime_cfg.transpose_capacity};
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    Bucket& bucket = ensure_bucket_locked(key, runtime_cfg);
+    ensure_min_pool_locked(bucket, key, runtime_cfg,
+                           static_cast<std::size_t>(runtime_cfg.threads));
+    Slot slot = acquire_slot_locked(bucket, key, runtime_cfg);
+    Plan<Scalar>* plan_ptr = slot.plan;
+    std::size_t index = slot.index;
+    lock.unlock();
+    return Token(this, key, index, plan_ptr);
+  }
+
+  // Pre-populate cached plans for common audio DSP configurations so that the
+  // first call is already warm. The cache keeps enough instances around to
+  // cover the configured thread capacity.
+  void warm_audio_profiles(const PlanRuntimeConfig& base_cfg = {}) {
+    auto normalized = normalize_config(base_cfg);
+    const int default_threads =
+        normalized.threads > 0 ? normalized.threads : Plan<Scalar>::Limits::kDefaultRuntimeThreads;
+    const int default_lanes =
+        normalized.lanes > 0 ? normalized.lanes : Plan<Scalar>::Limits::kDefaultLaneCapacity;
+
+    std::array<int, 8> fft_sizes{32, 64, 128, 256, 512, 1024, 2048, 4096};
+
+    std::array<int, 4> lane_seed{
+        1,
+        default_lanes,
+        Plan<Scalar>::Limits::kDefaultLaneCapacity,
+        default_lanes * 2};
+    std::vector<int> lane_candidates;
+    lane_candidates.reserve(lane_seed.size());
+    for (int candidate : lane_seed) {
+      if (candidate <= 0) continue;
+      int clamped = std::clamp(candidate, 1,
+                               Plan<Scalar>::Limits::compile_time_max_lane_capacity());
+      if (std::find(lane_candidates.begin(), lane_candidates.end(), clamped) ==
+          lane_candidates.end()) {
+        lane_candidates.push_back(clamped);
+      }
+    }
+
+    std::array<int, 4> thread_seed{
+        1,
+        default_threads,
+        Plan<Scalar>::Limits::kDefaultRuntimeThreads,
+        Plan<Scalar>::Limits::kCompileTimeMaxThreads};
+    std::vector<int> thread_candidates;
+    thread_candidates.reserve(thread_seed.size());
+    for (int candidate : thread_seed) {
+      if (candidate <= 0) continue;
+      int clamped = std::clamp(candidate, 1,
+                               Plan<Scalar>::Limits::kCompileTimeMaxThreads);
+      if (std::find(thread_candidates.begin(), thread_candidates.end(), clamped) ==
+          thread_candidates.end()) {
+        thread_candidates.push_back(clamped);
+      }
+    }
+
+    std::array<bool, 2> inverse_modes{false, true};
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (int N : fft_sizes) {
+      for (int lanes : lane_candidates) {
+        if (lanes <= 0) continue;
+        int clamped_lanes = std::clamp(lanes, 1,
+            Plan<Scalar>::Limits::compile_time_max_lane_capacity());
+        for (int threads : thread_candidates) {
+          if (threads <= 0) continue;
+          int clamped_threads =
+              std::clamp(threads, 1, Plan<Scalar>::Limits::kCompileTimeMaxThreads);
+          PlanRuntimeConfig runtime = normalized;
+          runtime.threads = clamped_threads;
+          runtime.lanes = clamped_lanes;
+          runtime.transpose_capacity = normalized.transpose_capacity;
+          for (bool inverse : inverse_modes) {
+            runtime.inverse = inverse;
+            PlanKey key{N, inverse, runtime.threads, runtime.lanes,
+                        runtime.transpose_capacity};
+            Bucket& bucket = ensure_bucket_locked(key, runtime);
+            ensure_min_pool_locked(bucket, key, runtime,
+                                   static_cast<std::size_t>(runtime.threads));
+          }
+        }
+      }
+    }
+  }
+
+ private:
+  struct CachedEntry {
+    std::unique_ptr<PlanEnvironment<Scalar>> env;
+    bool in_use = false;
+  };
+
+  struct Bucket {
+    PlanRuntimeConfig runtime{};
+    std::vector<CachedEntry> entries;
+    bool runtime_set = false;
+  };
+
+  struct Slot {
+    std::size_t index = 0;
+    Plan<Scalar>* plan = nullptr;
+  };
+
+  static PlanRuntimeConfig normalize_config(const PlanRuntimeConfig& cfg) {
+    PlanRuntimeConfig normalized = cfg;
+    if (normalized.threads <= 0) {
+      normalized.threads = Plan<Scalar>::Limits::kDefaultRuntimeThreads;
+    }
+    normalized.threads =
+        std::clamp(normalized.threads, 1, Plan<Scalar>::Limits::kCompileTimeMaxThreads);
+
+    if (normalized.lanes <= 0) {
+      normalized.lanes = Plan<Scalar>::Limits::kDefaultLaneCapacity;
+    }
+    normalized.lanes = std::clamp(normalized.lanes, 1,
+                                  Plan<Scalar>::Limits::compile_time_max_lane_capacity());
+    return normalized;
+  }
+
+  Bucket& ensure_bucket_locked(const PlanKey& key,
+                               const PlanRuntimeConfig& runtime_cfg) {
+    auto [it, inserted] = buckets_.try_emplace(key);
+    Bucket& bucket = it->second;
+    if (!bucket.runtime_set) {
+      bucket.runtime = runtime_cfg;
+      bucket.runtime.inverse = key.inverse;
+      bucket.runtime_set = true;
+    }
+    return bucket;
+  }
+
+  void ensure_min_pool_locked(Bucket& bucket, const PlanKey& key,
+                              const PlanRuntimeConfig& runtime_cfg,
+                              std::size_t copies) {
+    if (copies == 0) copies = 1;
+    while (bucket.entries.size() < copies) {
+      auto env = std::make_unique<PlanEnvironment<Scalar>>();
+      PlanRuntimeConfig cfg = runtime_cfg;
+      cfg.inverse = key.inverse;
+      env->initialize(key.N, key.inverse, cfg);
+      bucket.entries.push_back({std::move(env), false});
+    }
+  }
+
+  Slot acquire_slot_locked(Bucket& bucket, const PlanKey& key,
+                           const PlanRuntimeConfig& runtime_cfg) {
+    for (std::size_t i = 0; i < bucket.entries.size(); ++i) {
+      auto& entry = bucket.entries[i];
+      if (!entry.in_use) {
+        entry.in_use = true;
+        return Slot{i, &entry.env->plan()};
+      }
+    }
+
+    auto env = std::make_unique<PlanEnvironment<Scalar>>();
+    PlanRuntimeConfig cfg = runtime_cfg;
+    cfg.inverse = key.inverse;
+    env->initialize(key.N, key.inverse, cfg);
+    bucket.entries.push_back({std::move(env), true});
+    CachedEntry& entry = bucket.entries.back();
+    return Slot{bucket.entries.size() - 1, &entry.env->plan()};
+  }
+
+  void release_token(const PlanKey& key, std::size_t index) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = buckets_.find(key);
+    if (it == buckets_.end()) return;
+    Bucket& bucket = it->second;
+    if (index < bucket.entries.size()) {
+      bucket.entries[index].in_use = false;
+    }
+  }
+
+  std::mutex mutex_;
+  std::unordered_map<PlanKey, Bucket, PlanKeyHash> buckets_;
+};
+
+} // namespace eigfft

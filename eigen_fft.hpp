@@ -2,6 +2,10 @@
 #define EIGFFT_DEBUG 0
 #endif
 
+#ifndef EIGFFT_TRACE_STOCKHAM
+#define EIGFFT_TRACE_STOCKHAM 0
+#endif
+
 // eigen_fft.hpp (header-only)
 #pragma once
 
@@ -9,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cmath>
 #include <complex>
 #include <condition_variable>
@@ -16,11 +21,12 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <atomic>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <type_traits>
 
 // #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 //   #include <xmmintrin.h>  // FTZ/DAZ
@@ -42,6 +48,61 @@ struct Plan;
 struct KernelContext {
   virtual ~KernelContext() = default;
 };
+
+template <class T>
+struct PlanArena {
+  using Complex = std::complex<T>;
+  Complex* twiddles = nullptr;
+  int twiddle_count = 0;
+  int* bitrev = nullptr;
+  int bitrev_count = 0;
+
+  Complex* baseline_a = nullptr;
+  Complex* baseline_b = nullptr;
+  Complex** baseline_columns = nullptr;
+  int baseline_thread_capacity = 0;
+  int baseline_lane_capacity = 0;
+
+  Complex* stockham_ping = nullptr;
+  Complex* stockham_pong = nullptr;
+  std::ptrdiff_t* stockham_lane_bases = nullptr;
+  int stockham_thread_capacity = 0;
+  int stockham_lane_capacity = 0;
+
+  Complex* nd_transpose = nullptr;
+  std::size_t nd_transpose_capacity = 0;
+
+  // Optional algorithm-specific special buffers. Fixed-size slot array for
+  // fast, indexable hot-path access. Slots may be null if unused.
+  static constexpr int kMaxSpecialBuffers = 8;
+  Complex* special_buf[kMaxSpecialBuffers] = {};
+  std::size_t special_capacity[kMaxSpecialBuffers] = {};
+  std::ptrdiff_t special_stride[kMaxSpecialBuffers] = {};
+};
+
+template <class T>
+struct PlanArenaShape {
+  std::size_t twiddles = 0;
+  std::size_t bitrev = 0;
+  std::size_t baseline_complex = 0;   // count per buffer (a/b)
+  std::size_t baseline_columns = 0;   // pointer slots
+  std::size_t stockham_stage = 0;     // per ping/pong buffer
+  std::size_t stockham_lane_bases = 0;
+};
+
+template <class T>
+inline PlanArenaShape<T> compute_plan_arena_shape(int N, int thread_capacity, int lane_capacity) {
+  PlanArenaShape<T> shape;
+  const int threads = std::max(1, thread_capacity);
+  const int lanes = std::max(1, lane_capacity);
+  shape.twiddles = static_cast<std::size_t>(std::max(1, N / 2));
+  shape.bitrev = static_cast<std::size_t>(N);
+  shape.baseline_complex = static_cast<std::size_t>(threads) * static_cast<std::size_t>(lanes);
+  shape.baseline_columns = static_cast<std::size_t>(threads) * static_cast<std::size_t>(lanes);
+  shape.stockham_stage = static_cast<std::size_t>(threads) * static_cast<std::size_t>(lanes) * static_cast<std::size_t>(N);
+  shape.stockham_lane_bases = static_cast<std::size_t>(threads) * static_cast<std::size_t>(lanes);
+  return shape;
+}
 
 namespace detail {
 
@@ -71,21 +132,33 @@ class WorkerPool {
   WorkerPool& operator=(WorkerPool&&) = delete;
 
   void reset(int threads) {
-    shutdown();
     const int requested = std::max(1, threads);
-    total_threads_ = requested;
-    worker_count_ = total_threads_ > 0 ? total_threads_ - 1 : 0;
-    stop_ = false;
-    job_.fn = nullptr;
-    job_.total = 0;
-    job_.chunk = 1;
-    job_.chunk_count = 0;
-    job_.next.store(0, std::memory_order_relaxed);
-    job_.pending.store(0, std::memory_order_relaxed);
-    job_.active = false;
-    workers_.reserve(static_cast<size_t>(worker_count_));
-    for (int i = 0; i < worker_count_; ++i) {
-      workers_.emplace_back([this, worker_id = i + 1]() { worker_loop(worker_id); });
+    if (workers_.empty()) {
+      stop_ = false;
+      job_.fn = nullptr;
+      job_.total = 0;
+      job_.chunk = 1;
+      job_.chunk_count = 0;
+      job_.next.store(0, std::memory_order_relaxed);
+      job_.pending.store(0, std::memory_order_relaxed);
+      job_.active = false;
+      total_threads_ = 1;
+      worker_count_ = 0;
+    }
+
+    if (requested <= total_threads_) {
+      return;  // keep existing fleet alive; never shrink in the hot path
+    }
+
+    const int additional_workers = requested - total_threads_;
+    if (additional_workers <= 0) return;
+
+    workers_.reserve(static_cast<size_t>(worker_count_ + additional_workers));
+    for (int i = 0; i < additional_workers; ++i) {
+      const int worker_id = worker_count_ + 1;
+      workers_.emplace_back([this, worker_id]() { worker_loop(worker_id); });
+      ++worker_count_;
+      ++total_threads_;
     }
   }
 
@@ -97,6 +170,12 @@ class WorkerPool {
     if (chunk == 0) chunk = 1;
     const size_t chunk_size = chunk;
     std::function<void(size_t, size_t, int)> wrapped = std::forward<Fn>(fn);
+#if EIGFFT_TRACE_STOCKHAM
+    std::cout << "[pool] parallel_for begin total=" << total_items
+              << " chunk=" << chunk_size
+              << " worker_count=" << worker_count_
+              << " total_threads=" << total_threads_ << std::endl;
+#endif
     if (total_threads_ <= 1 || worker_count_ == 0 || total_items <= chunk_size) {
       size_t start = 0;
       while (start < total_items) {
@@ -104,6 +183,9 @@ class WorkerPool {
         wrapped(start, end, 0);
         start = end;
       }
+#if EIGFFT_TRACE_STOCKHAM
+      std::cout << "[pool] parallel_for completed inline" << std::endl;
+#endif
       return;
     }
 
@@ -135,6 +217,9 @@ class WorkerPool {
     std::unique_lock<std::mutex> lock(mutex_);
     cv_done_.wait(lock, [&] { return !job_.active; });
     job_.fn = nullptr;
+#if EIGFFT_TRACE_STOCKHAM
+    std::cout << "[pool] parallel_for finished" << std::endl;
+#endif
   }
 
  private:
@@ -173,6 +258,9 @@ class WorkerPool {
       std::unique_lock<std::mutex> lock(mutex_);
       cv_job_.wait(lock, [&] { return stop_ || job_.active; });
       if (stop_) return;
+#if EIGFFT_TRACE_STOCKHAM
+  std::cout << "[pool] worker " << worker_id << " woke" << std::endl;
+#endif
       lock.unlock();
 
       drain_chunks(worker_id);
@@ -192,6 +280,10 @@ class WorkerPool {
       if (index >= job_.chunk_count) break;
       const size_t start = index * job_.chunk;
       const size_t end = std::min(job_.total, start + job_.chunk);
+#if EIGFFT_TRACE_STOCKHAM
+      std::cout << "[pool] worker " << worker_id << " processing chunk idx=" << index
+            << " start=" << start << " end=" << end << std::endl;
+#endif
       job_.fn(start, end, worker_id);
     }
   }
@@ -206,118 +298,93 @@ class WorkerPool {
   Job job_{};
 };
 
-template <class T>
-struct ButterflyKernel {
-  using Complex = std::complex<T>;
-  using Traits = Eigen::internal::packet_traits<Complex>;
-  using Packet = typename Traits::type;
-  static constexpr int PacketSize = Traits::size;
+// Close the local `detail` namespace while including standalone butterfly
+// headers. The butterfly headers declare their own `eigfft::detail` scope so
+// include them at namespace scope to avoid nested `eigfft::detail::eigfft::detail`.
+} // namespace detail
+} // namespace eigfft
 
-  static void apply(Complex* a, Complex* b, int width, const Complex& w) {
-    int lane = 0;
-    if constexpr (PacketSize > 1) {
-      const Packet w_packet = Eigen::internal::pset1<Packet>(w);
-      for (; lane + PacketSize <= width; lane += PacketSize) {
-        const Packet a_pack = Eigen::internal::ploadu<Packet>(a + lane);
-        const Packet b_pack = Eigen::internal::ploadu<Packet>(b + lane);
-        const Packet b_twiddled = Eigen::internal::pmul(b_pack, w_packet);
-        const Packet sum = Eigen::internal::padd(a_pack, b_twiddled);
-        const Packet diff = Eigen::internal::psub(a_pack, b_twiddled);
-        Eigen::internal::pstoreu<Complex, Packet>(a + lane, sum);
-        Eigen::internal::pstoreu<Complex, Packet>(b + lane, diff);
-      }
-    }
-    for (; lane < width; ++lane) {
-      const Complex ai = a[lane];
-      const Complex bt = b[lane] * w;
-      a[lane] = ai + bt;
-      b[lane] = ai - bt;
-    }
-  }
-};
+// Force the core to use the external butterfly types (compat header with
+// aliases). You can set EIGFFT_USE_EXTERNAL_BFLY=0 to keep the old
+// internal definitions in `eigen_fft.hpp` (not recommended).
+#ifndef EIGFFT_USE_EXTERNAL_BFLY
+#define EIGFFT_USE_EXTERNAL_BFLY 1
+#endif
 
-template <class T>
-struct ButterflyScatter {
-  using Complex = std::complex<T>;
-  using Traits = Eigen::internal::packet_traits<Complex>;
-  using Packet = typename Traits::type;
-  static constexpr int PacketSize = Traits::size;
+#include "butterfly_api.hpp"
+#if EIGFFT_USE_EXTERNAL_BFLY
+#include "butterfly_kernel.hpp" // compatibility header; defines aliases into detail
+#else
+// If external butterfly is disabled, optionally include internal lightweight
+// implementation (kept separate to reduce file size). By default we prefer the
+// external compatibility header.
+#include "butterfly_impl_radix2.hpp"
+#endif
 
-  static void apply(const Complex* a, const Complex* b, Complex* out0, Complex* out1,
-                    int width, const Complex& w) {
-    int lane = 0;
-    if constexpr (PacketSize > 1) {
-      const Packet w_packet = Eigen::internal::pset1<Packet>(w);
-      for (; lane + PacketSize <= width; lane += PacketSize) {
-        const Packet a_pack = Eigen::internal::ploadu<Packet>(a + lane);
-        const Packet b_pack = Eigen::internal::ploadu<Packet>(b + lane);
-        const Packet b_twiddled = Eigen::internal::pmul(b_pack, w_packet);
-        const Packet sum = Eigen::internal::padd(a_pack, b_twiddled);
-        const Packet diff = Eigen::internal::psub(a_pack, b_twiddled);
-        Eigen::internal::pstoreu<Complex, Packet>(out0 + lane, sum);
-        Eigen::internal::pstoreu<Complex, Packet>(out1 + lane, diff);
-      }
-    }
-    for (; lane < width; ++lane) {
-      const Complex ai = a[lane];
-      const Complex bt = b[lane] * w;
-      out0[lane] = ai + bt;
-      out1[lane] = ai - bt;
-    }
-  }
-};
+namespace eigfft {
+namespace detail {
 
 template <class T>
 struct StockhamState : KernelContext {
   using Complex = std::complex<T>;
 
-  struct ThreadScratch {
-    std::vector<Complex> ping;
-    std::vector<Complex> pong;
-    std::vector<Complex*> columns;
-  };
-
-  explicit StockhamState(Plan<T>& plan)
-      : pool(plan.use_threads ? plan.effective_threads(plan.packet_cols) : 1),
-        lane_capacity(std::max(1, (plan.tuning.packet_step > 0) ? plan.tuning.packet_step
-                                                                : plan.packet_cols)),
-        N(plan.N) {
-    scratch.resize(static_cast<size_t>(std::max(1, pool.size())));
-    resize_buffers();
+  explicit StockhamState(Plan<T>& plan, PlanArena<T>& arena_ref)
+      : arena(arena_ref),
+        pool(plan.use_threads ? plan.effective_threads(plan.packet_cols) : 1),
+        N(plan.N),
+        plan_owner(&plan) {
+    const int threads = std::max(1, pool.size());
+    if (arena.stockham_thread_capacity < threads) {
+      throw std::invalid_argument("PlanArena stockham_thread_capacity too small for requested threads");
+    }
+    if (arena.stockham_lane_capacity <= 0) {
+      throw std::invalid_argument("PlanArena stockham_lane_capacity must be positive");
+    }
+    if (!arena.stockham_ping || !arena.stockham_pong || !arena.stockham_lane_bases) {
+      throw std::invalid_argument("PlanArena missing Stockham scratch buffers");
+    }
   }
 
   void ensure_lane_capacity(int requested) {
-    if (requested <= lane_capacity) return;
-    lane_capacity = requested;
-    resize_buffers();
+    const int desired = std::max(1, requested);
+    if ((desired > arena.stockham_lane_capacity) && plan_owner && plan_owner->arena_resizer) {
+      const int threads = std::max(1, pool.size());
+      plan_owner->arena_resizer(arena, plan_owner->N, threads, desired);
+    }
   }
 
   void ensure_threads(int threads) {
-    const int desired = std::max(1, threads);
-    if (desired == pool.size()) return;
-    pool.reset(desired);
-    resize_buffers();
-  }
-
-  WorkerPool pool;
-  std::vector<ThreadScratch> scratch;
-  int lane_capacity = 1;
-  int N = 0;
-
- private:
-  void resize_buffers() {
-    const size_t per_lane = static_cast<size_t>(N) * static_cast<size_t>(lane_capacity);
-    if (per_lane == 0) return;
-    scratch.resize(static_cast<size_t>(std::max(1, pool.size())));
-    for (auto& ctx : scratch) {
-      ctx.ping.resize(per_lane);
-      ctx.pong.resize(per_lane);
-      ctx.columns.resize(static_cast<size_t>(lane_capacity));
+    int desired = std::max(1, threads);
+    if ((desired > arena.stockham_thread_capacity) && plan_owner && plan_owner->arena_resizer) {
+      const int lanes = std::max(1, arena.stockham_lane_capacity);
+      plan_owner->arena_resizer(arena, plan_owner->N, desired, lanes);
+    }
+    const int clamped_threads = std::min(desired, arena.stockham_thread_capacity);
+    if (clamped_threads > pool.size()) {
+      pool.reset(clamped_threads);
     }
   }
+
+  size_t thread_stride() const {
+    return static_cast<size_t>(N) * static_cast<size_t>(std::max(1, arena.stockham_lane_capacity));
+  }
+
+  PlanArena<T>& arena;
+  WorkerPool pool;
+  int N = 0;
+  Plan<T>* plan_owner = nullptr;
 };
 
 }  // namespace detail
+
+enum class MetadataKind { Twiddle, LayoutMap, StageSnapshot, StageParams, ButterflyPairs, StageInvariant, TwiddleIndexMap };
+
+template <class T>
+struct MetadataRequest {
+  MetadataKind kind = MetadataKind::Twiddle;
+  std::complex<T>* complex_buffer = nullptr;
+  std::size_t element_count = 0;
+};
 
 template <class T>
 struct AxisLayout {
@@ -327,6 +394,8 @@ struct AxisLayout {
   Eigen::Index batch_size = 0;
   Eigen::Index axis_stride = 1;
   Eigen::Index batch_stride = 0;
+  const MetadataRequest<T>* metadata_requests = nullptr;
+  int metadata_request_count = 0;
 
   Complex* column_ptr(Eigen::Index batch) const {
     return base + batch * batch_stride;
@@ -340,6 +409,244 @@ struct AxisLayout {
     return base != nullptr && axis_size > 0;
   }
 };
+
+namespace detail {
+
+template <class T>
+struct TwiddleMetadataWriter {
+  const MetadataRequest<T>* requests = nullptr;
+  int count = 0;
+  int stages = 0;
+  std::complex<T>* twiddle_buffer = nullptr;
+  bool has_twiddle = false;
+  std::size_t total_twiddles = 0;
+
+  TwiddleMetadataWriter(const AxisLayout<T>& layout, int stage_count)
+      : requests(layout.metadata_requests),
+        count(layout.metadata_request_count),
+        stages(stage_count) {
+    if (!requests || count <= 0 || stages <= 0) return;
+    total_twiddles = compute_total_twiddles(stages);
+    for (int i = 0; i < count; ++i) {
+      const MetadataRequest<T>& req = requests[i];
+      if (req.kind != MetadataKind::Twiddle) continue;
+      if (total_twiddles > 0) {
+        if (!req.complex_buffer) {
+          throw std::invalid_argument("Twiddle metadata requires complex buffer");
+        }
+        if (req.element_count < total_twiddles) {
+          throw std::invalid_argument("Twiddle metadata buffer too small");
+        }
+      }
+      twiddle_buffer = req.complex_buffer;
+      has_twiddle = (twiddle_buffer != nullptr);
+    }
+  }
+
+  bool enabled() const { return has_twiddle; }
+
+  void record(int stage_idx, int twiddle_idx, const std::complex<T>& value) const {
+    if (!has_twiddle) return;
+    if (stage_idx < 0 || stage_idx >= stages) return;
+    if (twiddle_idx < 0) return;
+    const std::size_t per_stage = static_cast<std::size_t>(1) << stage_idx;
+    if (static_cast<std::size_t>(twiddle_idx) >= per_stage) return;
+    const std::size_t stage_offset = (static_cast<std::size_t>(1) << stage_idx) - 1;
+    twiddle_buffer[stage_offset + static_cast<std::size_t>(twiddle_idx)] = value;
+  }
+
+  void record_plan_twiddles(const Plan<T>& plan) const {
+    if (!enabled()) return;
+    const int total_stages = std::min(stages, plan.lgN);
+    for (int stage = 0; stage < total_stages; ++stage) {
+      const int m = 1 << stage;
+      const int distance = m << 1;
+      const int tw_step = plan.N / distance;
+      for (int j = 0; j < m; ++j) {
+        record(stage, j, plan.W[j * tw_step]);
+      }
+    }
+  }
+
+ private:
+  static std::size_t compute_total_twiddles(int stage_count) {
+    if (stage_count <= 0) return 0;
+    std::size_t total = 0;
+    for (int i = 0; i < stage_count; ++i) {
+      total += static_cast<std::size_t>(1) << i;
+    }
+    return total;
+  }
+};
+
+template <class T>
+struct LayoutMetadataWriter {
+  const MetadataRequest<T>* requests = nullptr;
+  int count = 0;
+  std::complex<T>* layout_buffer = nullptr;
+  std::size_t capacity = 0;
+  std::size_t N = 0;
+
+  LayoutMetadataWriter(const AxisLayout<T>& layout, std::size_t n)
+      : requests(layout.metadata_requests),
+        count(layout.metadata_request_count),
+        N(n) {
+    if (!requests || count <= 0 || N == 0) return;
+    for (int i = 0; i < count; ++i) {
+      const MetadataRequest<T>& req = requests[i];
+      if (req.kind != MetadataKind::LayoutMap) continue;
+      layout_buffer = req.complex_buffer;
+      capacity = req.element_count;
+      break;
+    }
+    if (layout_buffer && capacity < N) {
+      throw std::invalid_argument("LayoutMap metadata buffer too small");
+    }
+  }
+
+  bool enabled() const { return layout_buffer != nullptr && N > 0; }
+
+  void set(std::size_t position, int source_index) const {
+    if (!enabled() || position >= N) return;
+    layout_buffer[position] = std::complex<T>(static_cast<T>(source_index), T(0));
+  }
+};
+
+template <class T>
+struct StageSnapshotWriter {
+  const MetadataRequest<T>* reqs = nullptr;
+  int count = 0;
+  std::complex<T>* buf = nullptr;
+  std::size_t N = 0;
+  int stages = 0;
+
+  StageSnapshotWriter(const AxisLayout<T>& layout, std::size_t n, int s)
+      : reqs(layout.metadata_requests), count(layout.metadata_request_count),
+        N(n), stages(s) {
+    if (!reqs || count <= 0 || N == 0 || stages <= 0) return;
+    for (int i = 0; i < count; ++i) {
+      if (reqs[i].kind == MetadataKind::StageSnapshot) {
+        buf = reqs[i].complex_buffer;
+        if (!buf || reqs[i].element_count < N * (std::size_t)stages)
+          throw std::invalid_argument("StageSnapshot buffer too small");
+        break;
+      }
+    }
+  }
+  bool enabled() const { return buf && N && stages; }
+  void set(int stage, int pos, const std::complex<T>& v) const {
+    if (enabled() && stage >= 0 && stage < stages && pos >= 0 && (std::size_t)pos < N)
+      buf[(std::size_t)stage * N + (std::size_t)pos] = v;
+  }
+  void copy_lane0(int stage, const std::complex<T>* src, int stride /*=1*/) const {
+    if (!enabled()) return;
+    for (std::size_t i = 0; i < N; ++i) set(stage, (int)i, src[i * (std::size_t)stride]);
+  }
+};
+
+template <class T>
+struct StageParamsWriter {
+  const MetadataRequest<T>* reqs = nullptr;
+  int count = 0;
+  std::complex<T>* buf = nullptr;
+  int stages = 0;
+  StageParamsWriter(const AxisLayout<T>& layout, int s)
+      : reqs(layout.metadata_requests), count(layout.metadata_request_count), stages(s) {
+    if (!reqs || count <= 0 || stages <= 0) return;
+    for (int i = 0; i < count; ++i) {
+      if (reqs[i].kind == MetadataKind::StageParams) {
+        buf = reqs[i].complex_buffer;
+        if (!buf || reqs[i].element_count < (std::size_t)stages)
+          throw std::invalid_argument("StageParams buffer too small");
+        break;
+      }
+    }
+  }
+  bool enabled() const { return buf && stages > 0; }
+  void set(int stage, int distance, int tw_step) const {
+    if (!enabled() || stage < 0 || stage >= stages) return;
+    buf[stage] = std::complex<T>(static_cast<T>(distance), static_cast<T>(tw_step));
+  }
+};
+
+template <class T>
+struct ButterflyPairsWriter {
+  const MetadataRequest<T>* reqs = nullptr;
+  int count = 0;
+  std::complex<T>* buf = nullptr;
+  std::size_t N = 0;
+  int stages = 0;
+  ButterflyPairsWriter(const AxisLayout<T>& layout, std::size_t n, int s)
+      : reqs(layout.metadata_requests), count(layout.metadata_request_count), buf(nullptr), N(n), stages(s) {
+    if (!reqs || count <= 0 || N == 0 || stages <= 0) return;
+    for (int i = 0; i < count; ++i) {
+      if (reqs[i].kind == MetadataKind::ButterflyPairs) {
+        buf = reqs[i].complex_buffer;
+        if (!buf || reqs[i].element_count < N * (std::size_t)stages)
+          throw std::invalid_argument("ButterflyPairs buffer too small");
+        break;
+      }
+    }
+  }
+  bool enabled() const { return buf && N && stages; }
+  void set(int stage, int pos, int lhs, int rhs) const {
+    if (!enabled() || stage < 0 || stage >= stages || pos < 0 || (std::size_t)pos >= N) return;
+    buf[(std::size_t)stage * N + (std::size_t)pos] = std::complex<T>(static_cast<T>(lhs), static_cast<T>(rhs));
+  }
+};
+
+template <class T>
+struct StageInvariantWriter {
+  const MetadataRequest<T>* reqs = nullptr;
+  int count = 0;
+  std::complex<T>* buf = nullptr;
+  int stages = 0;
+  StageInvariantWriter(const AxisLayout<T>& layout, int s)
+      : reqs(layout.metadata_requests), count(layout.metadata_request_count), buf(nullptr), stages(s) {
+    if (!reqs || count <= 0 || stages <= 0) return;
+    for (int i = 0; i < count; ++i) {
+      if (reqs[i].kind == MetadataKind::StageInvariant) {
+        buf = reqs[i].complex_buffer;
+        if (!buf || reqs[i].element_count < (std::size_t)stages)
+          throw std::invalid_argument("StageInvariant buffer too small");
+        break;
+      }
+    }
+  }
+  bool enabled() const { return buf && stages > 0; }
+  void set(int stage, T max_r0, T max_r1) const {
+    if (!enabled() || stage < 0 || stage >= stages) return;
+    buf[stage] = std::complex<T>(max_r0, max_r1);
+  }
+};
+
+template <class T>
+struct TwiddleIndexWriter {
+  const MetadataRequest<T>* reqs = nullptr;
+  int count = 0;
+  std::complex<T>* buf = nullptr;
+  std::size_t N = 0;
+  int stages = 0;
+  TwiddleIndexWriter(const AxisLayout<T>& layout, std::size_t n, int s)
+      : reqs(layout.metadata_requests), count(layout.metadata_request_count), buf(nullptr), N(n), stages(s) {
+    if (!reqs || count <= 0 || N == 0 || stages <= 0) return;
+    for (int i = 0; i < count; ++i) {
+      if (reqs[i].kind == MetadataKind::TwiddleIndexMap) {
+        buf = reqs[i].complex_buffer;
+        if (!buf || reqs[i].element_count < N * (std::size_t)stages)
+          throw std::invalid_argument("TwiddleIndexMap buffer too small");
+        break;
+      }
+    }
+  }
+  bool enabled() const { return buf && N && stages; }
+  void set(int stage, int pos, int tw_index) const {
+    if (!enabled() || stage < 0 || stage >= stages || pos < 0 || (std::size_t)pos >= N) return;
+    buf[(std::size_t)stage * N + (std::size_t)pos] = std::complex<T>(static_cast<T>(tw_index), T(0));
+  }
+};
+
+}  // namespace detail
 
 enum class KernelKind { Baseline, Stockham, External };
 
@@ -379,16 +686,40 @@ void external_destroy_state(Plan<T>& P, KernelContext* ctx);
 template<class T> struct Plan {
   using Complex = std::complex<T>;
   using RowBuffer = Eigen::Matrix<Complex, 1, Eigen::Dynamic, Eigen::RowMajor>;
+  using ArenaResizer = void (*)(PlanArena<T>&, int N, int threads, int lanes);
   struct KernelDescriptor;
 
   int N;
   bool inverse;
-  std::vector<Complex> W;   // base twiddles size N/2
-  Eigen::VectorXi bitrev;
+  Complex* W = nullptr;      // twiddle factors (size N/2)
+  int* bitrev = nullptr;     // bit-reversal indices (size N)
   int lgN;
   bool use_threads;
   int requested_threads;
   int packet_cols;  // auto from Eigen packets unless overridden
+
+  // Per-plan default butterfly configs. These are hot-path stable pointers
+  // (no allocations) that kernels will reference during execution. Users may
+  // override these on the Plan before dispatch to change butterfly behavior
+  // (e.g. select DIF vs DIT, set conjugation). Defaults preserve legacy
+  // behavior (Radix2_DIT, no conjugation).
+  ButterflyConfig<T> butterfly_default_baseline;
+  ButterflyConfig<T> butterfly_default_stockham;
+  ButterflyConfig<T> butterfly_default_external;
+
+  struct Limits {
+    static constexpr int kCompileTimeMaxThreads = 16;
+    static constexpr int kDefaultRuntimeThreads = 4;
+    static constexpr int kDefaultLaneCapacity = 2;
+
+    static constexpr int compile_time_max_lane_capacity() {
+      if constexpr (std::is_same_v<T, float>) {
+        return 8;  // AVX-512 holds 8 complex<float>; AVX2 fits within this bound.
+      } else {
+        return 4;  // AVX-512 holds 4 complex<double>; AVX2 fits within this bound.
+      }
+    }
+  };
 
   enum class ParallelDim { Auto, Columns, KBlocks };
   enum class Schedule { Auto, Static, Dynamic, Guided };
@@ -400,63 +731,92 @@ template<class T> struct Plan {
     bool force_ftz_daz = true;
   } tuning;
 
+  // Butterfly execution mode for Stockham: explicit, not implicit adapter.
+  // - UseScatter: Stockham will call the out-of-place ButterflyScatter implementation.
+  // - UseInplaceAdapter: Stockham will use PlanArena scratch and call an
+  //   in-place kernel via the Inplace-to-Scatter adapter (compatibility fallback).
+  enum class ButterflyMode { UseScatter = 0, UseInplaceAdapter = 1 };
+  ButterflyMode butterfly_stockham_mode = ButterflyMode::UseScatter;
+
   struct Workspace {
-    int capacity = 0;
-    int threads = 0;
-    std::vector<RowBuffer> a_cache;
-    std::vector<RowBuffer> b_cache;
-    std::vector<std::vector<Complex*>> column_ptrs;
-    Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor> nd_transpose;
-    Eigen::Index nd_rows = 0;
-    Eigen::Index nd_cols = 0;
+    void bind(Plan& plan_ref) {
+      owner = &plan_ref;
+      arena = &plan_ref.arena;
+    }
 
     void ensure(int threadCount, int cols) {
+      if (!arena) {
+        throw std::logic_error("Workspace not bound to PlanArena");
+      }
       if (threadCount <= 0) threadCount = 1;
-      if (threadCount != threads) {
-        a_cache.resize(threadCount);
-        b_cache.resize(threadCount);
-        column_ptrs.resize(threadCount);
-        threads = threadCount;
-        capacity = 0;
-#if EIGFFT_DEBUG
-        std::cout << "Workspace::ensure resized caches for threads=" << threads
-                  << std::endl;
-#endif
+      if (cols <= 0) cols = 1;
+      if ((cols > arena->baseline_lane_capacity ||
+           threadCount > arena->baseline_thread_capacity) && owner && owner->arena_resizer) {
+        owner->arena_resizer(*arena, owner->N, threadCount, cols);
       }
-      if (cols > capacity) {
-        for (auto& row : a_cache) row.resize(cols);
-        for (auto& row : b_cache) row.resize(cols);
-        for (auto& columns : column_ptrs) {
-          columns.resize(cols);
-          std::fill(columns.begin(), columns.end(), nullptr);
-        }
-        capacity = cols;
-#if EIGFFT_DEBUG
-        std::cout << "Workspace::ensure expanded capacity to cols=" << capacity
-                  << std::endl;
-#endif
-      }
+      const int clamped_threads = std::min(threadCount, arena->baseline_thread_capacity);
+      const int clamped_cols = std::min(cols, arena->baseline_lane_capacity);
+      threads = std::max(1, clamped_threads);
+      capacity = std::max(1, clamped_cols);
+    }
+
+    Complex* row_a(int thread) const {
+      return arena->baseline_a + static_cast<std::size_t>(thread) * arena->baseline_lane_capacity;
+    }
+
+    Complex* row_b(int thread) const {
+      return arena->baseline_b + static_cast<std::size_t>(thread) * arena->baseline_lane_capacity;
+    }
+
+    Complex** column_row(int thread) const {
+      return arena->baseline_columns + static_cast<std::size_t>(thread) * arena->baseline_lane_capacity;
     }
 
     void ensure_nd_buffer(Eigen::Index rows, Eigen::Index cols) {
+      if (!arena) {
+        throw std::logic_error("Workspace not bound to PlanArena");
+      }
       if (rows <= 0 || cols <= 0) {
         nd_rows = nd_cols = 0;
-        nd_transpose.resize(0, 0);
         return;
       }
-      if (rows != nd_rows || cols != nd_cols) {
-        nd_transpose.resize(cols, rows);
-        nd_rows = rows;
-        nd_cols = cols;
-#if EIGFFT_DEBUG
-        std::cout << "Workspace::ensure_nd_buffer resized transpose scratch to "
-                  << nd_transpose.rows() << "x" << nd_transpose.cols() << std::endl;
-#endif
+      const std::size_t required = static_cast<std::size_t>(rows) * static_cast<std::size_t>(cols);
+      if (required > arena->nd_transpose_capacity) {
+        if (owner && owner->arena_resizer) {
+          owner->pending_nd_capacity = required;
+          owner->arena_resizer(*arena, owner->N, std::max(1, threads), std::max(1, capacity));
+        } else {
+          throw std::invalid_argument("PlanArena nd_transpose capacity insufficient");
+        }
+      }
+      if (required > arena->nd_transpose_capacity) {
+        throw std::invalid_argument("PlanArena nd_transpose capacity insufficient after resize");
+      }
+      nd_rows = rows;
+      nd_cols = cols;
+      if (owner) {
+        owner->pending_nd_capacity = 0;
       }
     }
+
+    Complex* nd_buffer() const {
+      return arena ? arena->nd_transpose : nullptr;
+    }
+
+    int capacity = 0;
+    int threads = 0;
+    Eigen::Index nd_rows = 0;
+    Eigen::Index nd_cols = 0;
+
+   private:
+    PlanArena<T>* arena = nullptr;
+    Plan* owner = nullptr;
   };
 
   mutable Workspace workspace;
+  PlanArena<T>& arena;
+  ArenaResizer arena_resizer = nullptr;
+  mutable std::size_t pending_nd_capacity = 0;
   const KernelDescriptor* kernel_desc_ = nullptr;
   std::unique_ptr<KernelContext> kernel_state_;
 
@@ -473,9 +833,114 @@ template<class T> struct Plan {
     DestroyStateFn destroy_state = nullptr;
   };
 
-  Plan(int n, bool inv=false, bool threads=true, int max_threads=0)
-      : N(n), inverse(inv), W(n/2), bitrev(n), lgN(0), use_threads(threads),
-        requested_threads(max_threads), packet_cols(1) {
+  // Generic, algorithm-agnostic request for extra plan workspace resources.
+  struct AdvancedWorkspaceRequest {
+    int min_lane_capacity = 0;              // desired per-thread lane capacity
+    int min_thread_capacity = 0;            // desired thread capacity
+    std::size_t min_nd_transpose_capacity = 0; // desired ND transpose capacity (elements)
+    bool prefer_inplace_emulation = false;  // hint for allocator
+    // Special buffer requests: preferred_slot >= 0 to request a fixed slot.
+    struct SpecialRequest {
+      int preferred_slot = -1; // -1 = not set; caller should prefer explicit slot for speed
+      std::size_t elements = 0; // number of Complex elements requested
+      bool operator==(const SpecialRequest& o) const noexcept {
+        return preferred_slot == o.preferred_slot && elements == o.elements;
+      }
+    };
+    std::vector<SpecialRequest> special_requests;
+
+    bool operator==(const AdvancedWorkspaceRequest& o) const noexcept {
+      if (min_lane_capacity != o.min_lane_capacity) return false;
+      if (min_thread_capacity != o.min_thread_capacity) return false;
+      if (min_nd_transpose_capacity != o.min_nd_transpose_capacity) return false;
+      if (prefer_inplace_emulation != o.prefer_inplace_emulation) return false;
+      if (special_requests.size() != o.special_requests.size()) return false;
+      for (size_t i = 0; i < special_requests.size(); ++i) {
+        if (!(special_requests[i] == o.special_requests[i])) return false;
+      }
+      return true;
+    }
+  };
+
+  // Cached fulfilled advanced requests for this Plan. Durable for the Plan lifetime.
+  mutable std::vector<AdvancedWorkspaceRequest> cached_advanced_requests;
+  // Pending per-slot special capacities requested prior to calling arena_resizer.
+  mutable std::array<std::size_t, PlanArena<T>::kMaxSpecialBuffers> pending_special_capacity{};
+  // Mutex to protect cached requests and pending_special_capacity during reservation.
+  mutable std::mutex advanced_reserve_mutex;
+
+  // Attempt to reserve advanced workspace described by 'req'. Returns true if
+  // the Plan (PlanArena) meets the request (either already satisfied or after
+  // invoking arena_resizer). On success the request is cached for future
+  // fast-path checks. This is conservative and durable: requests remain cached
+  // for the Plan lifetime. The method may call arena_resizer if available.
+  bool reserve_advanced_workspace(const AdvancedWorkspaceRequest& req) const {
+    // Fast-path: already cached
+    {
+      std::lock_guard<std::mutex> g(advanced_reserve_mutex);
+      for (const auto& r : cached_advanced_requests) {
+        if (r == req) return true;
+      }
+    }
+
+    // Try to satisfy ND transpose capacity first.
+    if (req.min_nd_transpose_capacity > arena.nd_transpose_capacity) {
+      if (arena_resizer) {
+        // Set pending request and ask resizer to grow arena.
+        const_cast<Plan*>(this)->pending_nd_capacity = req.min_nd_transpose_capacity;
+        arena_resizer(const_cast<PlanArena<T>&>(arena), N, std::max(1, requested_threads), std::max(1, req.min_lane_capacity));
+      }
+      if (arena.nd_transpose_capacity < req.min_nd_transpose_capacity) return false;
+    }
+
+    // Check lane/thread capacity. If neither baseline nor stockham capacities
+    // meet the requested lane count, attempt a resize.
+    const bool lane_ok = (arena.baseline_lane_capacity >= req.min_lane_capacity) || (arena.stockham_lane_capacity >= req.min_lane_capacity);
+    const bool thread_ok = (arena.baseline_thread_capacity >= req.min_thread_capacity) || (arena.stockham_thread_capacity >= req.min_thread_capacity);
+    if (!lane_ok || !thread_ok) {
+      if (arena_resizer) {
+        arena_resizer(const_cast<PlanArena<T>&>(arena), N, std::max(req.min_thread_capacity, requested_threads), std::max(req.min_lane_capacity, arena.baseline_lane_capacity));
+      }
+      const bool lane_ok2 = (arena.baseline_lane_capacity >= req.min_lane_capacity) || (arena.stockham_lane_capacity >= req.min_lane_capacity);
+      const bool thread_ok2 = (arena.baseline_thread_capacity >= req.min_thread_capacity) || (arena.stockham_thread_capacity >= req.min_thread_capacity);
+      if (!lane_ok2 || !thread_ok2) return false;
+    }
+
+    // Handle special buffer requests (preferred_slot must be >= 0 for now).
+    if (!req.special_requests.empty()) {
+      if (!arena_resizer) return false; // cannot satisfy special requests without resizer
+      // Lock while we update pending_special_capacity
+      {
+        std::lock_guard<std::mutex> g(advanced_reserve_mutex);
+        for (const auto& s : req.special_requests) {
+          if (s.preferred_slot < 0 || s.preferred_slot >= PlanArena<T>::kMaxSpecialBuffers) return false;
+          const int slot = s.preferred_slot;
+          // If arena already has sufficient capacity, nothing to request.
+          if (arena.special_capacity[slot] >= s.elements) continue;
+          // Otherwise, set pending capacity to requested size (or max of existing pending).
+          pending_special_capacity[slot] = std::max(pending_special_capacity[slot], s.elements);
+        }
+      }
+      // Call resizer to attempt to satisfy pending special capacities.
+      arena_resizer(const_cast<PlanArena<T>&>(arena), N, std::max(req.min_thread_capacity, requested_threads), std::max(req.min_lane_capacity, arena.baseline_lane_capacity));
+      // Verify capacities after resize.
+      for (const auto& s : req.special_requests) {
+        const int slot = s.preferred_slot;
+        if (arena.special_capacity[slot] < s.elements) return false;
+      }
+    }
+
+    // Success: cache and return true.
+    {
+      std::lock_guard<std::mutex> g(advanced_reserve_mutex);
+      const_cast<std::vector<AdvancedWorkspaceRequest>&>(cached_advanced_requests).push_back(req);
+    }
+    return true;
+  }
+
+  Plan(int n, PlanArena<T>& arena_ref, bool inv=false, bool threads=true, int max_threads=0)
+      : N(n), inverse(inv), lgN(0), use_threads(threads),
+        requested_threads(max_threads), packet_cols(1), arena(arena_ref) {
 #if !defined(EIGFFT_ALLOW_SEQUENTIAL)
     if (!use_threads) {
       throw std::invalid_argument(
@@ -491,6 +956,21 @@ template<class T> struct Plan {
 #if EIGFFT_DEBUG
     std::cout << "Plan constructor entered, N=" << N << std::endl;
 #endif
+    if (requested_threads <= 0) {
+      requested_threads = Limits::kDefaultRuntimeThreads;
+    }
+    requested_threads = std::min(requested_threads, Limits::kCompileTimeMaxThreads);
+
+    if (!arena.twiddles || !arena.bitrev) {
+      throw std::invalid_argument("PlanArena must provide twiddle and bit-reversal buffers");
+    }
+    if (arena.twiddle_count < std::max(1, N / 2) || arena.bitrev_count < N) {
+      throw std::invalid_argument("PlanArena buffers smaller than required for Plan");
+    }
+
+    W = arena.twiddles;
+    bitrev = arena.bitrev;
+
     // power-of-two check
     int t = N;
     while ((t & 1) == 0) { ++lgN; t >>= 1; }
@@ -517,13 +997,59 @@ template<class T> struct Plan {
       bitrev[i] = static_cast<int>(r);
     }
 
-    int packet = static_cast<int>(Eigen::internal::packet_traits<Complex>::size);
-    if (packet <= 0) packet = 1;
-    packet_cols = packet;
+    if (!arena.baseline_a || !arena.baseline_b || !arena.baseline_columns) {
+      throw std::invalid_argument("PlanArena missing baseline workspace buffers");
+    }
+    if (arena.baseline_thread_capacity <= 0 ||
+        arena.baseline_thread_capacity > Limits::kCompileTimeMaxThreads) {
+      throw std::invalid_argument("PlanArena baseline_thread_capacity out of range");
+    }
+    if (arena.baseline_lane_capacity <= 0 ||
+        arena.baseline_lane_capacity > Limits::compile_time_max_lane_capacity()) {
+      throw std::invalid_argument("PlanArena baseline_lane_capacity out of range");
+    }
+
+    if (!arena.stockham_ping || !arena.stockham_pong || !arena.stockham_lane_bases) {
+      throw std::invalid_argument("PlanArena missing Stockham scratch buffers");
+    }
+    if (arena.stockham_thread_capacity <= 0 ||
+        arena.stockham_thread_capacity > Limits::kCompileTimeMaxThreads) {
+      throw std::invalid_argument("PlanArena stockham_thread_capacity out of range");
+    }
+    if (arena.stockham_lane_capacity <= 0 ||
+        arena.stockham_lane_capacity > Limits::compile_time_max_lane_capacity()) {
+      throw std::invalid_argument("PlanArena stockham_lane_capacity out of range");
+    }
+
+    requested_threads = std::min(requested_threads, arena.stockham_thread_capacity);
+    if (arena.baseline_thread_capacity < requested_threads) {
+      throw std::invalid_argument("PlanArena baseline_thread_capacity smaller than requested thread count");
+    }
+
+  int packet = static_cast<int>(Eigen::internal::packet_traits<Complex>::size);
+  if (packet <= 0) packet = 1;
+  const int arena_lane_cap = std::max(1, arena.baseline_lane_capacity);
+  packet_cols = std::max(1, std::min(packet, arena_lane_cap));
 #if EIGFFT_DEBUG
     std::cout << "Plan using packet_cols=" << packet_cols << std::endl;
 #endif
+
+  // Warm the workspace to avoid hot-path checks during the first dispatch.
+  workspace.bind(*this);
+  const int warm_threads = effective_threads(packet_cols);
+  workspace.ensure(warm_threads, packet_cols);
     select_kernel(baseline_kernel());
+  // initialize butterfly defaults per algorithm (no allocations in hot path)
+  butterfly_default_baseline.radix = ButterflyRadix::Radix2;
+  butterfly_default_baseline.method = ButterflyMethod::DIT;
+  butterfly_default_baseline.tw_place = TwiddlePlacement::PreRHS;
+  butterfly_default_baseline.forward = true;
+  butterfly_default_baseline.conjugate_tw = false;
+  butterfly_default_baseline.simd_width = 1;
+
+  butterfly_default_stockham = butterfly_default_baseline;
+
+  butterfly_default_external = butterfly_default_baseline;
   }
 
   ~Plan() {
@@ -565,6 +1091,8 @@ template<class T> struct Plan {
 #endif
   if (limit <= 0) limit = runtime_cap;
   else limit = std::min(limit, runtime_cap);
+  limit = std::min(limit, Limits::kCompileTimeMaxThreads);
+  limit = std::min(limit, arena.stockham_thread_capacity);
   return std::max(1, limit);
   }
 
@@ -576,9 +1104,14 @@ template<class T> struct Plan {
     workspace.ensure_nd_buffer(rows, cols);
   }
 
-  auto& transpose_buffer() const {
-    return workspace.nd_transpose;
+  Complex* transpose_buffer_data() const {
+    return workspace.nd_buffer();
   }
+
+  Eigen::Index transpose_rows() const { return workspace.nd_rows; }
+  Eigen::Index transpose_cols() const { return workspace.nd_cols; }
+
+  void set_arena_resizer(ArenaResizer r) { arena_resizer = r; }
 
   void select_kernel(const KernelDescriptor& descriptor) {
     if (kernel_desc_ == &descriptor) return;
@@ -665,8 +1198,9 @@ template<class T> struct Plan {
 namespace detail {
 
 template<class T>
-inline void tiled_transpose(const std::complex<T>* src, Eigen::Index rows, Eigen::Index cols,
-                            std::complex<T>* dst, Eigen::Index tile_rows, Eigen::Index tile_cols)
+inline void tiled_transpose_colmajor(const std::complex<T>* src, Eigen::Index rows,
+                                     Eigen::Index cols, std::complex<T>* dst,
+                                     Eigen::Index tile_rows, Eigen::Index tile_cols)
 {
   if (rows <= 0 || cols <= 0 || src == nullptr || dst == nullptr) return;
   if (tile_rows <= 0) tile_rows = rows;
@@ -680,10 +1214,51 @@ inline void tiled_transpose(const std::complex<T>* src, Eigen::Index rows, Eigen
       for (Eigen::Index j = 0; j < width; ++j) {
         const std::complex<T>* src_col = src + (c0 + j) * rows + r0;
         for (Eigen::Index i = 0; i < height; ++i) {
-          dst[(c0 + j) + (r0 + i) * dest_rows] = src_col[i];
+          const Eigen::Index row = c0 + j;
+          const Eigen::Index col = r0 + i;
+          dst[row + col * dest_rows] = src_col[i];
         }
       }
     }
+  }
+  if (snap.enabled() && layout.batch_size > 0) {
+    const auto* col0 = layout.base + 0 * layout.batch_stride; // batch 0
+    snap.copy_lane0(stage_idx, col0, /*axis_stride*/ (int)layout.axis_stride);
+  }
+}
+
+// Shared input validation for FFT axis execution (hot-path small inline)
+template<class T>
+inline void validate_fft_axis(const Plan<T>& P, const AxisLayout<T>& layout) {
+  if (!layout.valid())
+    throw std::invalid_argument("AxisLayout must reference valid data.");
+  if (layout.axis_size != P.N)
+    throw std::invalid_argument("AxisLayout axis_size must match Plan::N.");
+}
+
+// Prepare Plan workspace and compute lane/stride values used by execution paths.
+template<class T>
+inline void prepare_plan_workspace(const Plan<T>& P, const AxisLayout<T>& layout,
+                                   int &out_B, int &out_threads,
+                                   int &out_active_lane_cols, int &out_lane_cols,
+                                   Eigen::Index &out_axis_stride, Eigen::Index &out_batch_stride,
+                                   const typename Plan<T>::AdvancedWorkspaceRequest* adv_req = nullptr,
+                                   bool* out_has_advanced_alloc = nullptr)
+{
+  out_B = static_cast<int>(layout.batch_size);
+  out_threads = P.effective_threads(out_B);
+  const int requested_lanes = (P.tuning.packet_step > 0) ? P.tuning.packet_step : P.packet_cols;
+  out_lane_cols = std::max(1, requested_lanes);
+  P.ensure_workspace(out_threads, out_lane_cols);
+  out_active_lane_cols = std::max(1, std::min(out_lane_cols, P.workspace.capacity));
+  if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
+  out_axis_stride = layout.axis_stride;
+  out_batch_stride = layout.batch_stride;
+  if (adv_req) {
+    const bool ok = P.reserve_advanced_workspace(*adv_req);
+    if (out_has_advanced_alloc) *out_has_advanced_alloc = ok;
+  } else if (out_has_advanced_alloc) {
+    *out_has_advanced_alloc = false;
   }
 }
 
@@ -694,23 +1269,40 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
   using Complex = typename Plan<T>::Complex;
 
   const int N = P.N;
-  if (!layout.valid())
-    throw std::invalid_argument("AxisLayout must reference valid data.");
-  if (layout.axis_size != N)
-    throw std::invalid_argument("AxisLayout axis_size must match Plan::N.");
-  const int B = static_cast<int>(layout.batch_size);
-  const int threads = P.effective_threads(B);
+  const int stages = P.lgN;
+  validate_fft_axis(P, layout);
+  const detail::TwiddleMetadataWriter<T> metadata(layout, stages);
+  metadata.record_plan_twiddles(P);
+  const detail::LayoutMetadataWriter<T> layout_writer(layout, static_cast<std::size_t>(N));
+  if (layout_writer.enabled()) {
+    for (int pos = 0; pos < N; ++pos) {
+      layout_writer.set(static_cast<std::size_t>(pos), P.bitrev[pos]);
+    }
+  }
+  const detail::StageSnapshotWriter<T> snap(layout, static_cast<std::size_t>(N), stages);
+  const detail::StageParamsWriter<T> params(layout, stages);
+  const detail::ButterflyPairsWriter<T> pairs(layout, static_cast<std::size_t>(N), stages);
+  const detail::StageInvariantWriter<T> invariant(layout, stages);
+  const detail::TwiddleIndexWriter<T> twmap(layout, static_cast<std::size_t>(N), stages);
+  // Initialize invariant buffer to zero if enabled
+  if (invariant.enabled()) {
+    for (int s = 0; s < stages; ++s) invariant.set(s, T(0), T(0));
+  }
+  int B, threads, lane_cols, active_lane_cols;
+  Eigen::Index axis_stride, batch_stride;
+  prepare_plan_workspace(P, layout, B, threads, active_lane_cols, lane_cols, axis_stride, batch_stride);
   const bool parallel_enabled = P.use_threads && threads > 1;
-  const int requested_lanes =
-      (P.tuning.packet_step > 0) ? P.tuning.packet_step : P.packet_cols;
-  const int lane_cols = std::max(1, requested_lanes);
-  P.ensure_workspace(threads, std::max(B, lane_cols));
-  if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
 
-  const int chunk_count = (B + lane_cols - 1) / lane_cols;
-  const Eigen::Index axis_stride = layout.axis_stride;
-  const Eigen::Index batch_stride = layout.batch_stride;
-  const int* bitrev = P.bitrev.data();
+  const int chunk_count = (B + active_lane_cols - 1) / active_lane_cols;
+  // Print actual stride/ptr info used by Baseline (helpful for batch-pitch mismatch)
+  std::cout << "[baseline] axis_stride=" << axis_stride
+            << " batch_stride=" << batch_stride
+            << " lane_cols=" << active_lane_cols << std::endl;
+  for (int bi = 0; bi < std::min(3, B); ++bi) {
+    const void* ptr = static_cast<const void*>(layout.base + static_cast<std::size_t>(bi) * (std::size_t)batch_stride);
+    std::cout << "[baseline] base[" << bi << "]=" << ptr << std::endl;
+  }
+  const int* bitrev = P.bitrev;
 
   bool permuted_in_parallel = false;
 #ifdef _OPENMP
@@ -719,11 +1311,11 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
 #pragma omp parallel num_threads(threads)
     {
       const int tid = omp_get_thread_num();
-      auto& columns = P.workspace.column_ptrs[tid];
+      Complex** columns = P.workspace.column_row(tid);
 #pragma omp for schedule(static)
       for (int chunk = 0; chunk < chunk_count; ++chunk) {
-        const int col = chunk * lane_cols;
-        const int width = std::min(lane_cols, B - col);
+        const int col = chunk * active_lane_cols;
+        const int width = std::min(active_lane_cols, B - col);
         if (width <= 0) continue;
         for (int lane = 0; lane < width; ++lane) {
           const Eigen::Index batch_index = Eigen::Index(col + lane);
@@ -744,14 +1336,14 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
   }
 #endif
   if (!permuted_in_parallel) {
-    auto& columns = P.workspace.column_ptrs[0];
+    Complex** columns = P.workspace.column_row(0);
     for (int chunk = 0; chunk < chunk_count; ++chunk) {
-      const int col = chunk * lane_cols;
-      const int width = std::min(lane_cols, B - col);
+      const int col = chunk * active_lane_cols;
+      const int width = std::min(active_lane_cols, B - col);
       if (width <= 0) continue;
       for (int lane = 0; lane < width; ++lane) {
         const Eigen::Index batch_index = Eigen::Index(col + lane);
-        columns[lane] = layout.base + batch_index * batch_stride;
+          columns[lane] = layout.base + batch_index * batch_stride;
       }
       for (int i = 0; i < N; ++i) {
         const int src = bitrev[i];
@@ -759,17 +1351,18 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
         const Eigen::Index dst_offset = Eigen::Index(i) * axis_stride;
         const Eigen::Index src_offset = Eigen::Index(src) * axis_stride;
         for (int lane = 0; lane < width; ++lane) {
-          Complex* column_ptr = columns[lane];
+            Complex* column_ptr = columns[lane];
           std::swap(column_ptr[dst_offset], column_ptr[src_offset]);
         }
       }
     }
   }
 
-  for (int len = 2; len <= N; len <<= 1) {
-    const int half = len >> 1;
-    const int step = N / len;
-    const int blocks = N / len;
+  for (int len = 2, stage_idx = 0; len <= N; len <<= 1, ++stage_idx) {
+  const int half = len >> 1;
+  const int step = N / len;
+  const int blocks = N / len;
+  if (params.enabled()) params.set(stage_idx, len, step);
 
     bool butterflies_in_parallel = false;
 #ifdef _OPENMP
@@ -778,11 +1371,9 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
 #pragma omp parallel num_threads(threads)
       {
         const int tid = omp_get_thread_num();
-        auto& a_cache = P.workspace.a_cache[tid];
-        auto& b_cache = P.workspace.b_cache[tid];
-        auto& columns = P.workspace.column_ptrs[tid];
-        Complex* a_ptr = a_cache.data();
-        Complex* b_ptr = b_cache.data();
+        Complex* a_ptr = P.workspace.row_a(tid);
+        Complex* b_ptr = P.workspace.row_b(tid);
+        Complex** columns = P.workspace.column_row(tid);
         const int work_items = half * blocks * chunk_count;
         if (work_items > 0) {
 #pragma omp for schedule(static)
@@ -792,8 +1383,8 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
             tmp /= chunk_count;
             const int block = tmp % blocks;
             const int k = tmp / blocks;
-            const int col = chunk * lane_cols;
-            const int width = std::min(lane_cols, B - col);
+            const int col = chunk * active_lane_cols;
+            const int width = std::min(active_lane_cols, B - col);
             if (width <= 0) continue;
             for (int lane = 0; lane < width; ++lane) {
               const Eigen::Index batch_index = Eigen::Index(col + lane);
@@ -804,16 +1395,50 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
             const Eigen::Index a_offset = Eigen::Index(a_index) * axis_stride;
             const Eigen::Index b_offset = Eigen::Index(b_index) * axis_stride;
             const Complex w = P.W[k * step];
+            Complex* a_in_local = P.workspace.row_a(threads > 1 ? tid : 0);
+            Complex* b_in_local = P.workspace.row_b(threads > 1 ? tid : 0);
             for (int lane = 0; lane < width; ++lane) {
               Complex* column_ptr = columns[lane];
               a_ptr[lane] = column_ptr[a_offset];
               b_ptr[lane] = column_ptr[b_offset];
+              a_in_local[lane] = a_ptr[lane];
+              b_in_local[lane] = b_ptr[lane];
             }
-            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w);
+            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_baseline);
             for (int lane = 0; lane < width; ++lane) {
               Complex* column_ptr = columns[lane];
               column_ptr[a_offset] = a_ptr[lane];
               column_ptr[b_offset] = b_ptr[lane];
+              const int batch_index = col + lane;
+              if (snap.enabled() && batch_index == 0) {
+                const Complex y0 = column_ptr[a_offset];
+                const Complex y1 = column_ptr[b_offset];
+                snap.set(stage_idx, a_index, y0);
+                snap.set(stage_idx, b_index, y1);
+                if (twmap.enabled()) {
+                  const int tw_index = k * step;
+                  twmap.set(stage_idx, a_index, tw_index);
+                  twmap.set(stage_idx, b_index, tw_index);
+                }
+                if (invariant.enabled()) {
+                  const Complex a_in = a_in_local[static_cast<size_t>(lane)];
+                  const Complex b_in = b_in_local[static_cast<size_t>(lane)];
+                  const T r0 = std::abs((y0 + y1) - T(2) * a_in);
+                  // energy invariant: (|y0|^2 + |y1|^2) - 2*(|a|^2 + |b|^2)
+                  const T e = (std::norm(y0) + std::norm(y1)) - T(2) * (std::norm(a_in) + std::norm(b_in));
+                  const T abs_e = std::abs(e);
+                  const std::complex<T> prev = invariant.buf ? invariant.buf[stage_idx] : std::complex<T>(T(0), T(0));
+                  const T prev_r0 = prev.real();
+                  const T prev_e = prev.imag();
+                  const T new_r0 = std::max(prev_r0, r0);
+                  const T new_e = std::max(prev_e, abs_e);
+                  invariant.buf[stage_idx] = std::complex<T>(new_r0, new_e);
+                }
+              }
+              if (pairs.enabled() && batch_index == 0) {
+                pairs.set(stage_idx, a_index, a_index, b_index);
+                pairs.set(stage_idx, b_index, a_index, b_index);
+              }
             }
           }
         }
@@ -821,11 +1446,9 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
     }
 #endif
     if (!butterflies_in_parallel) {
-      auto& a_cache = P.workspace.a_cache[0];
-      auto& b_cache = P.workspace.b_cache[0];
-      auto& columns = P.workspace.column_ptrs[0];
-      Complex* a_ptr = a_cache.data();
-      Complex* b_ptr = b_cache.data();
+      Complex* a_ptr = P.workspace.row_a(0);
+      Complex* b_ptr = P.workspace.row_b(0);
+      Complex** columns = P.workspace.column_row(0);
       for (int k = 0; k < half; ++k) {
         const Complex w = P.W[k * step];
         for (int block = 0; block < blocks; ++block) {
@@ -835,9 +1458,11 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
           const Eigen::Index a_offset = Eigen::Index(a_index) * axis_stride;
           const Eigen::Index b_offset = Eigen::Index(b_index) * axis_stride;
           for (int chunk = 0; chunk < chunk_count; ++chunk) {
-            const int col = chunk * lane_cols;
-            const int width = std::min(lane_cols, B - col);
+            const int col = chunk * active_lane_cols;
+            const int width = std::min(active_lane_cols, B - col);
             if (width <= 0) continue;
+            std::vector<Complex> a_in_local(static_cast<size_t>(width));
+            std::vector<Complex> b_in_local(static_cast<size_t>(width));
             for (int lane = 0; lane < width; ++lane) {
               const Eigen::Index batch_index = Eigen::Index(col + lane);
               columns[lane] = layout.base + batch_index * batch_stride;
@@ -846,16 +1471,52 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
               Complex* column_ptr = columns[lane];
               a_ptr[lane] = column_ptr[a_offset];
               b_ptr[lane] = column_ptr[b_offset];
+              a_in_local[static_cast<size_t>(lane)] = a_ptr[lane];
+              b_in_local[static_cast<size_t>(lane)] = b_ptr[lane];
             }
-            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w);
+            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_baseline);
             for (int lane = 0; lane < width; ++lane) {
               Complex* column_ptr = columns[lane];
               column_ptr[a_offset] = a_ptr[lane];
               column_ptr[b_offset] = b_ptr[lane];
+              const int batch_index = col + lane;
+              if (snap.enabled() && batch_index == 0) {
+                const Complex y0 = column_ptr[a_offset];
+                const Complex y1 = column_ptr[b_offset];
+                snap.set(stage_idx, a_index, y0);
+                snap.set(stage_idx, b_index, y1);
+                if (twmap.enabled()) {
+                  const int tw_index = k * step;
+                  twmap.set(stage_idx, a_index, tw_index);
+                  twmap.set(stage_idx, b_index, tw_index);
+                }
+                if (invariant.enabled()) {
+                  const Complex a_in = a_in_local[static_cast<size_t>(lane)];
+                  const Complex b_in = b_in_local[static_cast<size_t>(lane)];
+                  const T r0 = std::abs((y0 + y1) - T(2) * a_in);
+                  // energy invariant: (|y0|^2 + |y1|^2) - 2*(|a|^2 + |b|^2)
+                  const T e = (std::norm(y0) + std::norm(y1)) - T(2) * (std::norm(a_in) + std::norm(b_in));
+                  const T abs_e = std::abs(e);
+                  const std::complex<T> prev = invariant.buf ? invariant.buf[stage_idx] : std::complex<T>(T(0), T(0));
+                  const T prev_r0 = prev.real();
+                  const T prev_e = prev.imag();
+                  const T new_r0 = std::max(prev_r0, r0);
+                  const T new_e = std::max(prev_e, abs_e);
+                  invariant.buf[stage_idx] = std::complex<T>(new_r0, new_e);
+                }
+              }
+              if (pairs.enabled() && batch_index == 0) {
+                pairs.set(stage_idx, a_index, a_index, b_index);
+                pairs.set(stage_idx, b_index, a_index, b_index);
+              }
             }
           }
         }
       }
+    }
+    // Baseline snapshots, pair records, twiddle-index, and invariants are captured at write-time above.
+    if (invariant.enabled()) {
+      // Nothing to do here because we updated per-write into the buffer; keep for clarity.
     }
   }
 
@@ -917,8 +1578,11 @@ inline void dispatch_fft(Plan<T>& P, KernelKind kind, const AxisLayout<T>& layou
 }
 
 template<class T>
-inline void fft_inplace_batched(Eigen::Ref<Eigen::Matrix<std::complex<T>, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>> X,
-                                const Plan<T>& P)
+inline void fft_inplace_batched_with_metadata(
+    Eigen::Ref<Eigen::Matrix<std::complex<T>, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>> X,
+    const Plan<T>& P,
+    const MetadataRequest<T>* metadata_requests,
+    int metadata_request_count)
 {
   AxisLayout<T> layout;
   layout.base = X.data();
@@ -926,7 +1590,16 @@ inline void fft_inplace_batched(Eigen::Ref<Eigen::Matrix<std::complex<T>, Eigen:
   layout.batch_size = static_cast<Eigen::Index>(X.cols());
   layout.axis_stride = 1;
   layout.batch_stride = static_cast<Eigen::Index>(X.rows());
+  layout.metadata_requests = metadata_requests;
+  layout.metadata_request_count = metadata_request_count;
   fft_apply_axis(P, layout);
+}
+
+template<class T>
+inline void fft_inplace_batched(Eigen::Ref<Eigen::Matrix<std::complex<T>, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>> X,
+                                const Plan<T>& P)
+{
+  fft_inplace_batched_with_metadata<T>(X, P, nullptr, 0);
 }
 
 template<class T>
@@ -955,18 +1628,18 @@ inline void fft_inplace_2d(Eigen::Ref<Eigen::Matrix<std::complex<T>, Eigen::Dyna
   fft_apply_axis(axis0_plan, axis0_layout);
 
   axis0_plan.ensure_nd_workspace(rows, cols);
-  auto& scratch = axis0_plan.transpose_buffer();
-  detail::tiled_transpose<T>(X.data(), rows, cols, scratch.data(), tile_rows, tile_cols);
+  Complex* scratch = axis0_plan.transpose_buffer_data();
+  detail::tiled_transpose_colmajor<T>(X.data(), rows, cols, scratch, tile_rows, tile_cols);
 
   AxisLayout<T> axis1_layout;
-  axis1_layout.base = scratch.data();
+  axis1_layout.base = scratch;
   axis1_layout.axis_size = cols;
   axis1_layout.batch_size = rows;
   axis1_layout.axis_stride = 1;
   axis1_layout.batch_stride = cols;
   fft_apply_axis(axis1_plan, axis1_layout);
 
-  detail::tiled_transpose<T>(scratch.data(), cols, rows, X.data(), tile_rows, tile_cols);
+  detail::tiled_transpose_colmajor<T>(scratch, cols, rows, X.data(), tile_rows, tile_cols);
 }
 
 namespace detail {
@@ -982,12 +1655,7 @@ void baseline_destroy_state(Plan<T>&, KernelContext*) {}
 template<class T>
 void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx) {
   using Complex = typename Plan<T>::Complex;
-  if (!layout.valid()) {
-    throw std::invalid_argument("AxisLayout must reference valid data.");
-  }
-  if (layout.axis_size != P.N) {
-    throw std::invalid_argument("AxisLayout axis_size must match Plan::N.");
-  }
+  validate_fft_axis(P, layout);
   auto* state = static_cast<StockhamState<T>*>(ctx);
   if (!state) {
     baseline_execute_axis(P, layout, nullptr);
@@ -996,22 +1664,114 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
 
   const int N = P.N;
   const int stages = P.lgN;
+  const detail::LayoutMetadataWriter<T> layout_writer(layout, static_cast<std::size_t>(N));
+  if (layout_writer.enabled()) {
+    std::vector<int> current_map(N);
+    std::vector<int> next_map(N);
+    for (int i = 0; i < N; ++i) current_map[i] = i;
+    for (int stage = 0; stage < stages; ++stage) {
+      const int m = 1 << stage;
+      const int distance = m << 1;
+      const int groups = N / distance;
+      for (int g = 0; g < groups; ++g) {
+        for (int j = 0; j < m; ++j) {
+          const int idx0 = g * distance + j;
+          const int idx1 = idx0 + m;
+          const int out_block = g * distance;
+          const int out0 = out_block + (j << 1);
+          const int out1 = out0 + 1;
+          next_map[out0] = current_map[idx0];
+          next_map[out1] = current_map[idx1];
+        }
+      }
+      current_map.swap(next_map);
+    }
+    for (int pos = 0; pos < N; ++pos) {
+      layout_writer.set(static_cast<std::size_t>(pos), current_map[pos]);
+    }
+  }
+  const detail::StageSnapshotWriter<T> snap(layout, static_cast<std::size_t>(N), stages);
+  const detail::StageParamsWriter<T> params(layout, stages);
+  const detail::ButterflyPairsWriter<T> pairs(layout, static_cast<std::size_t>(N), stages);
+  const detail::StageInvariantWriter<T> invariant(layout, stages);
+  const detail::TwiddleIndexWriter<T> twmap(layout, static_cast<std::size_t>(N), stages);
   const int B = static_cast<int>(layout.batch_size);
   if (B <= 0) {
     if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);
     return;
   }
 
-  const int desired_threads = P.effective_threads(B);
-  state->ensure_threads(desired_threads);
+  const detail::TwiddleMetadataWriter<T> metadata(layout, stages);
+  metadata.record_plan_twiddles(P);
 
-  const int requested_lanes =
-      (P.tuning.packet_step > 0) ? P.tuning.packet_step : P.packet_cols;
-  const int lane_cols = std::max(1, requested_lanes);
-  state->ensure_lane_capacity(lane_cols);
-  const int lane_capacity = state->lane_capacity;
+#if EIGFFT_TRACE_STOCKHAM
+  static std::atomic<int> dispatch_seq{0};
+  const int dispatch_id = dispatch_seq.fetch_add(1, std::memory_order_relaxed);
+  std::cout << "[stockham] dispatch=" << dispatch_id
+            << " plan=" << &P
+            << " state=" << state
+            << " layout.base=" << static_cast<const void*>(layout.base)
+            << " N=" << N
+            << " B=" << B
+            << std::endl;
+#endif
+
+  int B2, desired_threads, desired_lanes, active_lane_cols2;
+  Eigen::Index axis_stride2, batch_stride2;
+  // Build an algorithm-agnostic advanced workspace request and pass it into
+  // prepare_plan_workspace so the Plan can attempt to honor the reservation
+  // as part of workspace preparation (may call arena_resizer).
+  typename Plan<T>::AdvancedWorkspaceRequest adv_req{};
+  adv_req.min_lane_capacity = std::max(1, (int)std::max(1, desired_lanes));
+  adv_req.min_thread_capacity = std::max(1, desired_threads);
+  bool adv_reserved = false;
+  prepare_plan_workspace(P, layout, B2, desired_threads, active_lane_cols2, desired_lanes, axis_stride2, batch_stride2, &adv_req, &adv_reserved);
+  const int workspace_threads = std::max(1, P.workspace.threads);
+  const int workspace_lanes = std::max(1, P.workspace.capacity);
+
+  state->ensure_threads(workspace_threads);
+  state->ensure_lane_capacity(workspace_lanes);
+
+  const int stockham_capacity = std::max(1, state->arena.stockham_lane_capacity);
+  const int baseline_capacity = std::max(1, state->arena.baseline_lane_capacity);
+  const int lane_capacity = stockham_capacity;
+  const int lane_cols = std::max(1, std::min({desired_lanes, workspace_lanes, lane_capacity, baseline_capacity}));
+#if EIGFFT_TRACE_STOCKHAM
+  std::cout << "[stockham] lanes: requested=" << requested_lanes
+            << " packet_cols=" << P.packet_cols
+            << " lane_cols(final)=" << lane_cols
+            << " capacity(stockham/baseline)=" << stockham_capacity << "/" << baseline_capacity
+            << std::endl;
+#endif
   const Eigen::Index axis_stride = layout.axis_stride;
   const Eigen::Index batch_stride = layout.batch_stride;
+#if 1
+  // Print Stockham stride/ptr info (single-shot)
+  std::cout << "[stockham] axis_stride=" << axis_stride
+            << " batch_stride=" << batch_stride
+            << " lane_capacity=" << lane_capacity
+            << " lane_cols(final)=" << lane_cols << std::endl;
+  for (int bi = 0; bi < std::min(3, static_cast<int>(layout.batch_size)); ++bi) {
+    const void* ptr = static_cast<const void*>(layout.base + static_cast<std::size_t>(bi) * (std::size_t)batch_stride);
+    std::cout << "[stockham] base[" << bi << "]=" << ptr << std::endl;
+  }
+#endif
+#if EIGFFT_TRACE_STOCKHAM
+  std::cout << "[stockham] dispatch=" << dispatch_id
+            << " desired_threads=" << desired_threads
+            << " pool_size=" << state->pool.size()
+            << " lane_cols=" << lane_cols
+            << " lane_capacity=" << lane_capacity
+            << " axis_stride=" << axis_stride
+            << " batch_stride=" << batch_stride
+            << std::endl;
+  std::cout << "[stockham] arena ping=" << static_cast<const void*>(state->arena.stockham_ping)
+            << " pong=" << static_cast<const void*>(state->arena.stockham_pong)
+            << " lane_bases=" << static_cast<const void*>(state->arena.stockham_lane_bases)
+            << " thread_capacity=" << state->arena.stockham_thread_capacity
+            << " lane_capacity=" << state->arena.stockham_lane_capacity
+            << std::endl;
+#endif
 
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
 
@@ -1019,124 +1779,222 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     if (start >= static_cast<size_t>(B)) return;
     const int width = static_cast<int>(end - start);
     if (width <= 0) return;
-    if (width > lane_capacity) {
-      std::cerr << "[stockham debug] width exceeds lane_capacity: width=" << width
-                << " lane_capacity=" << lane_capacity << " start=" << start
-                << " end=" << end << std::endl;
-      std::abort();
+    if (width > lane_cols) {
+      std::ostringstream oss;
+      oss << "Stockham chunk width exceeds lane allocation: width=" << width
+          << " lane_cols=" << lane_cols
+          << " start=" << start << " end=" << end
+          << " batch=" << B;
+      throw std::runtime_error(oss.str());
     }
     // std::cerr << "[stockham debug] chunk start=" << start << " end=" << end
     //           << " worker=" << worker_id << " width=" << width << std::endl;
-    size_t slot = static_cast<size_t>(worker_id);
-    if (slot >= state->scratch.size()) {
-      slot = state->scratch.empty() ? size_t(0) : state->scratch.size() - 1;
+  #if EIGFFT_TRACE_STOCKHAM
+    if (start == 0 && worker_id == 0) {
+      std::cout << "[stockham] first chunk width=" << width
+                << " threads=" << state->pool.size()
+                << " lane_capacity=" << lane_capacity << std::endl;
     }
-    auto& scratch = state->scratch[slot];
-    auto* columns = scratch.columns.data();
+    #endif
+    size_t slot = static_cast<size_t>(worker_id);
+    if (slot >= static_cast<size_t>(state->arena.stockham_thread_capacity)) {
+      std::ostringstream oss;
+      oss << "Stockham worker slot exceeds arena thread capacity: worker_id=" << worker_id
+          << " capacity=" << state->arena.stockham_thread_capacity
+          << " pool=" << state->pool.size();
+      throw std::runtime_error(oss.str());
+    }
+  const size_t lane_stride = static_cast<size_t>(lane_capacity);
+    const size_t buffer_stride = state->thread_stride();
+    Complex* stage_in = state->arena.stockham_ping + slot * buffer_stride;
+    Complex* stage_out = state->arena.stockham_pong + slot * buffer_stride;
+    std::ptrdiff_t* lane_bases = state->arena.stockham_lane_bases + slot * lane_stride;
     const ptrdiff_t max_offset = (layout.batch_size > 0 && layout.axis_size > 0)
-                                     ? ((layout.batch_size - 1) * layout.batch_stride +
-                                        (layout.axis_size - 1) * layout.axis_stride)
+                                     ? (ptrdiff_t(layout.batch_size - 1) *
+                                            ptrdiff_t(layout.batch_stride) +
+                                        ptrdiff_t(layout.axis_size - 1) *
+                                            ptrdiff_t(layout.axis_stride))
                                      : 0;
     for (int lane = 0; lane < width; ++lane) {
-      const Eigen::Index batch_index = Eigen::Index(start + lane);
-      columns[lane] = layout.base + batch_index * batch_stride;
-      const ptrdiff_t delta = columns[lane] - layout.base;
-      if (delta < 0 || delta > max_offset) {
-        std::cerr << "[stockham debug] column out of bounds: lane=" << lane
-                  << " batch_index=" << batch_index << " width=" << width
-                  << " delta=" << delta << " max_offset=" << max_offset
-                  << std::endl;
-        std::abort();
+      const ptrdiff_t base_idx = ptrdiff_t(start + lane) * ptrdiff_t(batch_stride);
+      lane_bases[static_cast<size_t>(lane)] = base_idx;
+      if (base_idx < 0 || base_idx > max_offset) {
+        std::cerr << "[stockham debug] batch base out of bounds: lane=" << lane
+                  << " start=" << start << " base_idx=" << base_idx
+                  << " max_offset=" << max_offset << std::endl;
+        return;
       }
     }
-
-    Complex* stage_in = scratch.ping.data();
-    Complex* stage_out = scratch.pong.data();
-    const int safe_width = std::min(width, state->lane_capacity);
+    const int safe_width = std::min(width, lane_cols);
+    #if EIGFFT_TRACE_STOCKHAM
+    if (start == 0 && worker_id == 0) {
+      std::cout << "[stockham] load phase start" << std::endl;
+    }
+    #endif
     for (int i = 0; i < N; ++i) {
       const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
-      Complex* dest = stage_in + i * state->lane_capacity;
+  Complex* dest = stage_in + i * lane_capacity;
       for (int lane = 0; lane < safe_width; ++lane) {
-        const ptrdiff_t base_idx = columns[lane] - layout.base;      // in Complex units
-        const ptrdiff_t idx      = base_idx + off;
+        const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
+        const ptrdiff_t idx = base_idx + off;
         if (idx < 0 || idx > max_offset) {
           std::cerr << "[stockham] load OOB: lane=" << lane
                     << " i=" << i << " idx=" << idx
                     << " max=" << max_offset << std::endl;
-          std::abort();
+          return;
         }
-        dest[lane] = columns[lane][off];
+        dest[lane] = layout.base[idx];
       }
     }
+    #if EIGFFT_TRACE_STOCKHAM
+    if (start == 0 && worker_id == 0) {
+      std::cout << "[stockham] load phase complete" << std::endl;
+    }
+    #endif
 
     Complex* in = stage_in;
     Complex* out = stage_out;
+    #if EIGFFT_TRACE_STOCKHAM
+    if (start == 0 && worker_id == 0) {
+      std::cout << "[stockham] transform loop start" << std::endl;
+    }
+    #endif
     for (int stage = 0; stage < stages; ++stage) {
       const int m = 1 << stage;
       const int distance = m << 1;
       const int groups = N / distance;
       const int tw_step = N / distance;
-      for (int j = 0; j < m; ++j) {
-        const Complex w = P.W[j * tw_step];
-        for (int g = 0; g < groups; ++g) {
-          const int idx0 = g * distance + j;
-          const int idx1 = idx0 + m;
-          const int out_base = g * distance + (j << 1);
-          const Complex* src0 = in + idx0 * lane_capacity;
-          const Complex* src1 = in + idx1 * lane_capacity;
-          Complex* dst0 = out + out_base * lane_capacity;
-          Complex* dst1 = out + (out_base + 1) * lane_capacity;
-          ButterflyScatter<T>::apply(src0, src1, dst0, dst1, width, w);
+        for (int j = 0; j < m; ++j) {
+          const Complex w = P.W[j * tw_step];
+          if (params.enabled() && j == 0) {
+            // record per-stage params once per stage (j==0)
+            params.set(stage, distance, tw_step);
+          }
+          for (int g = 0; g < groups; ++g) {
+            const int idx0 = g * distance + j;
+            const int idx1 = idx0 + m;
+            const int out_block = g * distance;  // Stockham autosort group-major block
+            const int out0_idx = out_block + (j << 1);
+            const int out1_idx = out0_idx + 1;
+            const Complex* src0 = in + idx0 * lane_capacity;
+            const Complex* src1 = in + idx1 * lane_capacity;
+            Complex* dst0 = out + out0_idx * lane_capacity;
+            Complex* dst1 = out + out1_idx * lane_capacity;
+            // Use the Plan-level stockham config. If the user requested
+            // in-place emulation (`prefer_inplace`), we provide preallocated
+            // per-worker scratch buffers from the PlanArena baseline buffers
+            // (no heap). Otherwise call the native scatter path.
+            ButterflyScatter<T>::apply(src0, src1, dst0, dst1, width, w, &P.butterfly_default_stockham);
+            if (pairs.enabled()) {
+              pairs.set(stage, out0_idx, idx0, idx1);
+              pairs.set(stage, out1_idx, idx0, idx1);
+            }
+            if (snap.enabled()) {
+              // lane-0 is stored at index 0 in the lane stride
+              const Complex y0 = dst0[0];
+              const Complex y1 = dst1[0];
+              snap.set(stage, out0_idx, y0);
+              snap.set(stage, out1_idx, y1);
+              if (twmap.enabled()) {
+                const int tw_index = j * tw_step;
+                twmap.set(stage, out0_idx, tw_index);
+                twmap.set(stage, out1_idx, tw_index);
+              }
+              if (invariant.enabled()) {
+                const Complex a_in = src0[0];
+                const Complex b_in = src1[0];
+                const T r0 = std::abs((y0 + y1) - T(2) * a_in);
+                // energy invariant: (|y0|^2 + |y1|^2) - 2*(|a|^2 + |b|^2)
+                const T e = (std::norm(y0) + std::norm(y1)) - T(2) * (std::norm(a_in) + std::norm(b_in));
+                const T abs_e = std::abs(e);
+                const std::complex<T> prev = invariant.buf ? invariant.buf[stage] : std::complex<T>(T(0), T(0));
+                const T prev_r0 = prev.real();
+                const T prev_e = prev.imag();
+                const T new_r0 = std::max(prev_r0, r0);
+                const T new_e = std::max(prev_e, abs_e);
+                invariant.buf[stage] = std::complex<T>(new_r0, new_e);
+              }
+            }
+          }
+        }
+  if (snap.enabled()) {
+        // lane 0 resides at contiguous positions in 'out' with stride = lane_capacity
+        for (int i = 0; i < N; ++i) {
+          snap.set(stage, i, out[i * lane_capacity + 0]);
         }
       }
       std::swap(in, out);
     }
+    #if EIGFFT_TRACE_STOCKHAM
+    if (start == 0 && worker_id == 0) {
+      std::cout << "[stockham] transform loop complete" << std::endl;
+    }
+    #endif
 
     const Complex* final_buf = (stages % 2 == 0) ? stage_in : stage_out;
     if (P.inverse) {
       const T scale = T(1) / T(N);
+      #if EIGFFT_TRACE_STOCKHAM
+      if (start == 0 && worker_id == 0) {
+        std::cout << "[stockham] store inverse phase start" << std::endl;
+      }
+      #endif
       for (int i = 0; i < N; ++i) {
         const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
-        const Complex* src = final_buf + i * state->lane_capacity;
+  const Complex* src = final_buf + i * lane_capacity;
         for (int lane = 0; lane < safe_width; ++lane) {
-          const ptrdiff_t base_idx = columns[lane] - layout.base;
-          const ptrdiff_t idx      = base_idx + off;
+          const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
+          const ptrdiff_t idx = base_idx + off;
           if (idx < 0 || idx > max_offset) {
             std::cerr << "[stockham] store OOB(inv): lane=" << lane
                       << " i=" << i << " idx=" << idx
                       << " max=" << max_offset << std::endl;
-            std::abort();
+            return;
           }
-          columns[lane][off] = src[lane] * scale;
+          layout.base[idx] = src[lane] * scale;
         }
       }
     } else {
+      #if EIGFFT_TRACE_STOCKHAM
+      if (start == 0 && worker_id == 0) {
+        std::cout << "[stockham] store phase start" << std::endl;
+      }
+      #endif
       for (int i = 0; i < N; ++i) {
         const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
-        const Complex* src = final_buf + i * state->lane_capacity;
+  const Complex* src = final_buf + i * lane_capacity;
         for (int lane = 0; lane < safe_width; ++lane) {
-          const ptrdiff_t base_idx = columns[lane] - layout.base;
-          const ptrdiff_t idx      = base_idx + off;
+          const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
+          const ptrdiff_t idx = base_idx + off;
           if (idx < 0 || idx > max_offset) {
             std::cerr << "[stockham] store OOB: lane=" << lane
                       << " i=" << i << " idx=" << idx
                       << " max=" << max_offset << std::endl;
-            std::abort();
+            return;
           }
-          columns[lane][off] = src[lane];
+          layout.base[idx] = src[lane];
         }
       }
     }
+    #if EIGFFT_TRACE_STOCKHAM
+    if (start == 0 && worker_id == 0) {
+      std::cout << "[stockham] store phase complete" << std::endl;
+    }
+    #endif
   };
 
   state->pool.parallel_for(static_cast<size_t>(B), static_cast<size_t>(lane_cols), process_chunk);
+
+#if EIGFFT_TRACE_STOCKHAM
+  std::cout << "[stockham] dispatch=" << dispatch_id << " parallel_for complete" << std::endl;
+#endif
 
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);
 }
 
 template<class T>
 std::unique_ptr<KernelContext> stockham_create_state(Plan<T>& plan) {
-  return std::unique_ptr<KernelContext>(new StockhamState<T>(plan));
+  return std::unique_ptr<KernelContext>(new StockhamState<T>(plan, plan.arena));
 }
 
 template<class T>
@@ -1206,5 +2064,12 @@ const std::array<const typename Plan<T>::KernelDescriptor*, 3>& Plan<T>::builtin
       detail::kExternalKernelAvailable ? &external_kernel() : nullptr};
   return list;
 }
+
+template<class T>
+struct PlanProviderSelector {
+  static typename detail::ButterflyRegistry<T>::ProviderInfo select(bool require_scatter, int min_simd_width, ButterflyMethod method_hint) {
+    return detail::ButterflyRegistry<T>::negotiate(require_scatter, min_simd_width, method_hint);
+  }
+};
 
 } // namespace eigfft

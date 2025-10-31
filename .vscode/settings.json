@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "stdexcept": "cpp",
+        "utility": "cpp",
+        "tuple": "cpp",
+        "random": "cpp"
+    }
+}

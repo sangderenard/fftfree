@@ -1,4 +1,5 @@
 #include "eigen_fft.hpp"
+#include "plan_support.hpp"
 
 #include <Eigen/Core>
 
@@ -44,7 +45,7 @@ struct BenchmarkCase {
 };
 
 static const std::vector<BenchmarkCase> kCases{
-    {256, 128, 12},
+  {256, 128, 120},
     {1024, 64, 8},
     {2048, 96, 6},
     {4096, 32, 4},
@@ -63,6 +64,12 @@ static const std::vector<AlgorithmSpec> kAlgorithms{
 struct LaneVariant {
   const char* label;
   int packet_step;  // 0 => auto, otherwise explicit lane width.
+};
+
+struct BenchmarkConfig {
+  eigfft::PlanRuntimeConfig runtime;
+  LaneVariant lanes;
+  bool inverse = false;
 };
 
 static const std::vector<LaneVariant> kLaneVariants{
@@ -101,15 +108,18 @@ struct RealtimeOptions {
 };
 
 template <typename Scalar>
-void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& opts) {
+void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& opts,
+                             const eigfft::PlanRuntimeConfig& runtime_cfg, bool batched,
+                             int window_size, int stride_size, eigfft::KernelKind kernel_kind,
+                             const char* kernel_label) {
   if (!opts.enabled) return;
 
   using Complex = std::complex<Scalar>;
   using MatrixXc = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
 
   const double sample_rate = std::min(std::max(opts.sample_rate_hz, 1.0), 1'000'000.0);
-  const int window = std::max(opts.window, 1);
-  const int stride = std::max(opts.stride, 1);
+  const int window = std::max(window_size, 1);
+  const int stride = std::max(stride_size, 1);
   const double safety = std::clamp(opts.safety_margin, 1e-3, 0.999);
   const double duration = std::max(opts.duration_seconds, window / sample_rate);
 
@@ -130,7 +140,8 @@ void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& op
   }
 
   std::cout << "\n--- Real-time probe (" << PrecisionTraits<Scalar>::label()
-            << ") ---" << std::endl;
+            << ", " << (batched ? "batched" : "sequential") << ", " << kernel_label
+            << ", window=" << window << ") ---" << std::endl;
   std::cout << "  sample_rate=" << sample_rate << " Hz, duration=" << duration
             << " s, frames=" << frames << std::endl;
   std::cout << "  window=" << window << ", stride=" << stride
@@ -143,12 +154,31 @@ void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& op
     pcm[i] = dist(rng);
   }
 
-  MatrixXc frame(window, 1);
-  eigfft::Plan<Scalar> plan(window, /*inverse=*/false, /*threads=*/true);
-  plan.tuning.packet_step = 0;
+  eigfft::PlanEnvironment<Scalar> plan_env;
+  eigfft::PlanRuntimeConfig env_cfg = runtime_cfg;
+  const int packet_guess = std::max(1, static_cast<int>(Eigen::internal::packet_traits<std::complex<Scalar>>::size));
+  env_cfg.lanes = std::max(env_cfg.lanes, packet_guess);
+  plan_env.initialize(window, /*inverse=*/false, env_cfg);
+  auto ensure_lane_capacity = [&](int required_lanes) {
+    const int needed = std::max(1, required_lanes);
+    if (needed > plan_env.lanes()) {
+      env_cfg.lanes = std::max(env_cfg.lanes, needed);
+      plan_env.initialize(window, /*inverse=*/false, env_cfg);
+    }
+  };
+  ensure_lane_capacity(packet_guess);
+  ensure_lane_capacity(plan_env.plan().packet_cols);
+  auto& plan = plan_env.plan();
+  plan.tuning.packet_step = std::min(plan.packet_cols, plan_env.lanes());
   plan.tuning.parallel_dim = eigfft::Plan<Scalar>::ParallelDim::Columns;
   plan.tuning.min_work_per_thread = 32;
   plan.tuning.force_ftz_daz = false;
+  bool kernel_supported = plan.use_kernel(kernel_kind);
+#ifndef NDEBUG
+  if (!kernel_supported) {
+    std::cout << "Warning: Requested kernel not supported, using default." << std::endl;
+  }
+#endif
 
   const double frame_period = stride / sample_rate;
   double cumulative_time = 0.0;
@@ -160,32 +190,62 @@ void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& op
 
   const auto delay_duration = std::chrono::duration<double>(opts.delay_seconds);
 
-  for (std::size_t f = 0; f < frames; ++f) {
-    const std::size_t start_idx = f * static_cast<std::size_t>(stride);
-    for (int i = 0; i < window; ++i) {
-      const Scalar real_sample = static_cast<Scalar>(pcm[start_idx + static_cast<std::size_t>(i)]);
-      frame(i, 0) = Complex(real_sample, Scalar(0));
+  if (batched) {
+    // Batched processing: create matrix with all frames
+    MatrixXc all_frames(window, static_cast<Eigen::Index>(frames));
+    for (std::size_t f = 0; f < frames; ++f) {
+      const std::size_t start_idx = f * static_cast<std::size_t>(stride);
+      for (int i = 0; i < window; ++i) {
+        const Scalar real_sample = static_cast<Scalar>(pcm[start_idx + static_cast<std::size_t>(i)]);
+        all_frames(i, static_cast<Eigen::Index>(f)) = Complex(real_sample, Scalar(0));
+      }
     }
 
     const auto compute_start = std::chrono::high_resolution_clock::now();
-    eigfft::fft_inplace_batched<Scalar>(frame, plan);
+    eigfft::fft_inplace_batched<Scalar>(all_frames, plan);
     const auto compute_end = std::chrono::high_resolution_clock::now();
-    const double compute_time =
-        std::chrono::duration<double>(compute_end - compute_start).count();
-    worst_compute_time = std::max(worst_compute_time, compute_time);
-    total_compute_time += compute_time;
+    const double total_compute_time_batch = std::chrono::duration<double>(compute_end - compute_start).count();
 
-    if (opts.delay_seconds > 0.0) {
-      std::this_thread::sleep_for(delay_duration);
-    }
-    const double frame_time = compute_time + opts.delay_seconds;
-    worst_frame_time = std::max(worst_frame_time, frame_time);
-    total_frame_time += frame_time;
+    // For batched, distribute time equally per frame
+    const double compute_time_per_frame = total_compute_time_batch / static_cast<double>(frames);
+    const double frame_time_per_frame = compute_time_per_frame;  // no delay in batched
 
-    cumulative_time += frame_time;
-    const double deadline = (static_cast<double>(f) + 1.0) * frame_period;
-    if (cumulative_time > deadline) {
-      ++overruns;
+    worst_compute_time = compute_time_per_frame;
+    total_compute_time = total_compute_time_batch;
+    worst_frame_time = frame_time_per_frame;
+    total_frame_time = total_compute_time_batch;
+    cumulative_time = total_compute_time_batch;  // all at once
+    overruns = 0;  // not applicable for batched
+  } else {
+    // Sequential processing: frame by frame
+    MatrixXc frame(window, 1);
+    for (std::size_t f = 0; f < frames; ++f) {
+      const std::size_t start_idx = f * static_cast<std::size_t>(stride);
+      for (int i = 0; i < window; ++i) {
+        const Scalar real_sample = static_cast<Scalar>(pcm[start_idx + static_cast<std::size_t>(i)]);
+        frame(i, 0) = Complex(real_sample, Scalar(0));
+      }
+
+      const auto compute_start = std::chrono::high_resolution_clock::now();
+      eigfft::fft_inplace_batched<Scalar>(frame, plan);
+      const auto compute_end = std::chrono::high_resolution_clock::now();
+      const double compute_time =
+          std::chrono::duration<double>(compute_end - compute_start).count();
+      worst_compute_time = std::max(worst_compute_time, compute_time);
+      total_compute_time += compute_time;
+
+      if (opts.delay_seconds > 0.0) {
+        std::this_thread::sleep_for(delay_duration);
+      }
+      const double frame_time = compute_time + opts.delay_seconds;
+      worst_frame_time = std::max(worst_frame_time, frame_time);
+      total_frame_time += frame_time;
+
+      cumulative_time += frame_time;
+      const double deadline = (static_cast<double>(f) + 1.0) * frame_period;
+      if (cumulative_time > deadline) {
+        ++overruns;
+      }
     }
   }
 
@@ -201,10 +261,13 @@ void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& op
   const bool meets_config = worst_frame_time <= allowable_time;
   const double slack = allowable_time - worst_frame_time;
 
+  const double avg_refresh_rate = 1.0 / avg_frame_time;
+
   std::cout << "  avg frame time      : " << avg_frame_time << " s" << std::endl;
   std::cout << "  avg compute time    : " << avg_compute_time << " s" << std::endl;
   std::cout << "  worst frame time    : " << worst_frame_time << " s" << std::endl;
   std::cout << "  worst compute time  : " << worst_compute_time << " s" << std::endl;
+  std::cout << "  avg refresh rate    : " << avg_refresh_rate << " Hz" << std::endl;
   std::cout << "  deadline overruns   : " << overruns << std::endl;
   std::cout << "  provided frame period (stride/sample_rate): " << frame_period
             << " s" << std::endl;
@@ -219,7 +282,8 @@ void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& op
 }
 
 template <typename Scalar>
-void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt_opts) {
+void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt_opts,
+                             const eigfft::PlanRuntimeConfig& runtime_cfg) {
   using Complex = std::complex<Scalar>;
   using MatrixXc = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
 
@@ -241,13 +305,21 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
     }
   };
 
-  auto run_plan = [&](const MatrixXc& seed, eigfft::Plan<Scalar>& plan, int repeats) {
+  auto run_plan = [&](const MatrixXc& seed,
+                            eigfft::PlanEnvironment<Scalar>& env,
+                            const BenchmarkConfig& cfg,
+                            int repeats) {
     double accum = 0.0;
     MatrixXc work(seed.rows(), seed.cols());
     for (int r = 0; r < repeats; ++r) {
       work = seed;
       const auto start = std::chrono::high_resolution_clock::now();
-      eigfft::fft_inplace_batched<Scalar>(work, plan);
+      // Build a fresh, single-use plan each repeat to avoid any buffer/arena reuse.
+      // NOTE: For real applications, use PlanCache instead for efficient reuse!
+      env.initialize(static_cast<int>(work.rows()), cfg.inverse, cfg.runtime);
+      auto& one_shot_plan = env.plan();
+      eigfft::fft_inplace_batched<Scalar>(work, one_shot_plan);
+      env.discard_plan();
       const auto end = std::chrono::high_resolution_clock::now();
       accum += std::chrono::duration<double>(end - start).count();
     }
@@ -273,30 +345,41 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
       bool reference_set = false;
 
       for (const auto& lanes : kLaneVariants) {
-        eigfft::Plan<Scalar> plan(task.N, /*inverse=*/false, /*threads=*/true);
-        plan.tuning.packet_step = lanes.packet_step;
-        plan.tuning.parallel_dim = eigfft::Plan<Scalar>::ParallelDim::Columns;
-        plan.tuning.min_work_per_thread = 32;
-        plan.tuning.force_ftz_daz = false;
-        if (algo.kind == eigfft::KernelKind::Stockham) {
-          plan.requested_threads = 4;
+        BenchmarkConfig cfg = {runtime_cfg, lanes, false};
+        eigfft::PlanEnvironment<Scalar> temp_env;
+        temp_env.initialize(task.N, cfg.inverse, cfg.runtime);
+        auto& temp_plan = temp_env.plan();
+        const int initial_packets = temp_plan.packet_cols;
+        const int desired_lanes = (cfg.lanes.packet_step == 0) ? initial_packets : cfg.lanes.packet_step;
+        if (desired_lanes > temp_env.lanes()) {
+          cfg.runtime.lanes = std::max(cfg.runtime.lanes, desired_lanes);
+          temp_env.initialize(task.N, cfg.inverse, cfg.runtime);
         }
-
-        if (!plan.use_kernel(algo.kind)) {
-          std::cout << "    " << lanes.label << ": unavailable (kernel unsupported)" << std::endl;
+        auto& temp_plan2 = temp_env.plan();
+        const int auto_lanes = std::min(temp_plan2.packet_cols, temp_env.lanes());
+        const int lane_override = (cfg.lanes.packet_step == 0)
+                                      ? auto_lanes
+                                      : std::min(cfg.lanes.packet_step, temp_env.lanes());
+        temp_plan2.tuning.packet_step = lane_override;
+        temp_plan2.tuning.parallel_dim = eigfft::Plan<Scalar>::ParallelDim::Columns;
+        temp_plan2.tuning.min_work_per_thread = 32;
+        temp_plan2.tuning.force_ftz_daz = false;
+        if (!temp_plan2.use_kernel(algo.kind)) {
+          std::cout << "    " << cfg.lanes.label << ": unavailable (kernel unsupported)" << std::endl;
           continue;
         }
+        eigfft::PlanEnvironment<Scalar> plan_env;
+        plan_env.discard_plan();
+        const double elapsed = run_plan(seed, plan_env, cfg, task.repeats);
+        const int lanes_used = (cfg.lanes.packet_step > 0) ? std::min(cfg.lanes.packet_step, plan_env.lanes()) : plan_env.lanes();
+        const int max_threads = plan_env.threads();
 
-        const double elapsed = run_plan(seed, plan, task.repeats);
-        const int lanes_used = (plan.tuning.packet_step > 0) ? plan.tuning.packet_step : plan.packet_cols;
-        const int max_threads = plan.effective_threads(task.B);
-
-        std::cout << "    " << lanes.label << " (lanes=" << lanes_used
+        std::cout << "    " << cfg.lanes.label << " (lanes=" << lanes_used
                   << ", max threads=" << max_threads << ") : " << elapsed << " s";
 
         if (!reference_set) {
           reference_time = elapsed;
-          reference_label = lanes.label;
+          reference_label = cfg.lanes.label;
           reference_set = true;
           std::cout << std::endl;
         } else {
@@ -313,15 +396,55 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
     }
   }
 
-  eigfft::Plan<Scalar> probe_plan(256, /*inverse=*/false, /*threads=*/true);
+  eigfft::PlanEnvironment<Scalar> probe_env;
+  probe_env.initialize(256, /*inverse=*/false, runtime_cfg);
+  auto& probe_plan = probe_env.plan();
   std::cout << "\nHand-rolled Cooley-Tukey kernel uses Eigen packets (packet_cols="
             << probe_plan.packet_cols
             << ") and OpenMP for batched columns." << std::endl;
 
-  run_realtime_simulation<Scalar>(seed_rng, rt_opts);
+  // Run realtime simulations with different configurations
+  std::vector<int> window_sizes = {1024, 64, 32};
+  for (const auto& algo : kAlgorithms) {
+    for (int win : window_sizes) {
+      int str = win / 2;  // stride = window / 2 for 50% overlap
+      run_realtime_simulation<Scalar>(seed_rng, rt_opts, runtime_cfg, /*batched=*/false, win, str, algo.kind, algo.label);
+      run_realtime_simulation<Scalar>(seed_rng, rt_opts, runtime_cfg, /*batched=*/true, win, str, algo.kind, algo.label);
+    }
+  }
 }
 
-}  // namespace
+}
+
+// Example of how to use PlanCache for real applications (efficient reuse)
+template <typename Scalar>
+void example_fft_with_cache() {
+  using Complex = std::complex<Scalar>;
+  using MatrixXc = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
+
+  // Create cache (can be shared across function calls)
+  static eigfft::PlanCache<Scalar> cache;
+  cache.warm_audio_profiles();
+
+  // Configuration for 1024-point FFT
+  eigfft::PlanRuntimeConfig cfg;
+  cfg.threads = 4;
+  cfg.lanes = 2;
+
+  // Get cached plan (thread-safe, reuses existing plans)
+  auto token = cache.get_plan(1024, /*inverse=*/false, cfg);
+  auto& plan = token.plan();
+
+  // Create input data
+  MatrixXc data(1024, 1);
+  // ... fill data ...
+
+  // Execute FFT (plan is reused if same config requested again)
+  eigfft::fft_inplace_batched<Scalar>(data, plan);
+
+  // Token automatically releases plan when it goes out of scope
+  // Plan remains cached for future use by this thread
+}
 
 int main(int argc, char** argv) {
   std::cout << "fftfree micro-benchmark" << std::endl;
@@ -330,8 +453,9 @@ int main(int argc, char** argv) {
     dump_simd_caps();
     Eigen::setNbThreads(1);
 
-    std::unordered_set<std::string> requested;
-    RealtimeOptions realtime_opts;
+  std::unordered_set<std::string> requested;
+  RealtimeOptions realtime_opts;
+  eigfft::PlanRuntimeConfig runtime_cfg;
     for (int i = 1; i < argc; ++i) {
       std::string arg = argv[i];
       const std::string prefix = "--precision=";
@@ -342,6 +466,20 @@ int main(int argc, char** argv) {
         while (std::getline(ss, token, ',')) {
           requested.insert(to_lower(token));
         }
+      } else if (arg.rfind("--threads=", 0) == 0) {
+        const int value = std::stoi(arg.substr(10));
+        if (value <= 0) {
+          std::cerr << "--threads expects a positive integer" << std::endl;
+          return 1;
+        }
+        runtime_cfg.threads = value;
+      } else if (arg.rfind("--lanes=", 0) == 0) {
+        const int value = std::stoi(arg.substr(8));
+        if (value <= 0) {
+          std::cerr << "--lanes expects a positive integer" << std::endl;
+          return 1;
+        }
+        runtime_cfg.lanes = value;
       } else if (arg == "--realtime" || arg == "--rt") {
         realtime_opts.enabled = true;
       } else if (arg.rfind("--rt-sample-rate=", 0) == 0) {
@@ -363,10 +501,13 @@ int main(int argc, char** argv) {
         realtime_opts.enabled = true;
         realtime_opts.duration_seconds = std::stod(arg.substr(14));
       } else if (arg == "--help" || arg == "-h") {
-        std::cout << "Usage: fft_example [--precision=f64,f32]\n"
-                     "  f64 : std::complex<double>\n"
-                     "  f32 : std::complex<float>\n"
-                     "Default is to run both precisions.\n"
+  std::cout << "Usage: fft_example [--precision=f64,f32] [--threads=N] [--lanes=M]\n"
+         "  f64 : std::complex<double>\n"
+         "  f32 : std::complex<float>\n"
+         "Default is to run both precisions.\n"
+         "\nRuntime configuration (clamped to build limits):\n"
+         "  --threads=N                      Max worker threads (default 4, max 16)\n"
+         "  --lanes=M                        Stockham lane capacity (default 2)\n"
                      "\nReal-time probe options (auto-enable realtime mode):\n"
                      "  --realtime | --rt                 Enable real-time simulation\n"
                      "  --rt-sample-rate=<Hz>             Input sample rate (default 48000, max 1e6)\n"
@@ -374,7 +515,9 @@ int main(int argc, char** argv) {
                      "  --rt-stride=<samples>             Hop size between frames (default 512)\n"
                      "  --rt-duration=<seconds>           PCM duration (default 10)\n"
                      "  --rt-delay-ms=<milliseconds>      Extra delay per frame (default 0)\n"
-                     "  --rt-safety=<0-1)                 Fraction of frame period usable for compute (default 0.85)\n";
+                     "  --rt-safety=<0-1)                 Fraction of frame period usable for compute (default 0.85)\n"
+                     "\nFor real applications, use eigfft::PlanCache for efficient plan reuse.\n"
+                     "See example_fft_with_cache() for usage pattern.\n";
         return 0;
       } else {
         std::cerr << "Unrecognized argument: " << arg << std::endl;
@@ -398,10 +541,10 @@ int main(int argc, char** argv) {
     std::mt19937_64 seed_rng(1337);
 
     if (requested.count("f64")) {
-      run_suite_for_precision<double>(seed_rng, realtime_opts);
+      run_suite_for_precision<double>(seed_rng, realtime_opts, runtime_cfg);
     }
     if (requested.count("f32")) {
-      run_suite_for_precision<float>(seed_rng, realtime_opts);
+      run_suite_for_precision<float>(seed_rng, realtime_opts, runtime_cfg);
     }
 
     return 0;
