@@ -11,9 +11,9 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDeb
         set(_fftfree_native_flag "/arch:SSE2")
       endif()
     endif()
-    add_compile_options($<$<CONFIG:Release>:/O2 /fp:fast ${_fftfree_native_flag} /DNDEBUG>)
+    add_compile_options(/O2 /fp:fast ${_fftfree_native_flag})
   else()
-    add_compile_options($<$<CONFIG:Release>:-O3 -ffast-math -march=native -DNDEBUG>)
+    add_compile_options(-O3 -ffast-math -march=native)
   endif()
 endif()
 # CMakeLists.txt

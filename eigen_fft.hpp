@@ -1192,10 +1192,9 @@ template<class T> struct Plan {
   butterfly_default_cooleytukey.simd_width = 1;
 
   butterfly_default_stockham = butterfly_default_cooleytukey;
-  // Stockham algorithm uses a Decimation-In-Frequency (DIF) scatter/permute
-  // pattern. Ensure the default butterfly method for Stockham is DIF so the
-  // ButterflyScatter path selects the matching math (y0=a+b, y1=(a-b)*w).
-  butterfly_default_stockham.method = ButterflyMethod::DIF;
+  // Stockham execution reuses the DIT scatter math; ensure the default
+  // butterfly method matches the layout expected by the Stockham index math.
+  butterfly_default_stockham.method = ButterflyMethod::DIT;
 
   butterfly_default_external = butterfly_default_cooleytukey;
   }
@@ -1369,10 +1368,6 @@ inline void tiled_transpose_colmajor(const std::complex<T>* src, Eigen::Index ro
       }
     }
   }
-  if (snap.enabled() && layout.batch_size > 0) {
-    const auto* col0 = layout.base + 0 * layout.batch_stride; // batch 0
-    snap.copy_lane0(stage_idx, col0, /*axis_stride*/ (int)layout.axis_stride);
-  }
 }
 
 // Shared input validation for FFT axis execution (hot-path small inline)
@@ -1471,6 +1466,13 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   prepare_plan_workspace(P, layout, B, threads, active_lane_cols, lane_cols, axis_stride, batch_stride);
   const bool parallel_enabled = P.use_threads && threads > 1;
 
+  const int invariant_slots = std::max(1, threads);
+  std::vector<std::complex<T>> invariant_scratch;
+  if (invariant.enabled() && stages > 0) {
+    invariant_scratch.assign(static_cast<size_t>(invariant_slots) * static_cast<size_t>(stages),
+                             std::complex<T>(T(0), T(0)));
+  }
+
   const int chunk_count = (B + active_lane_cols - 1) / active_lane_cols;
   // Unified trace for layout/stride info (no-op unless EIGFFT_TRACE_LAYOUT=1)
   detail::trace_layout_info<T>("cooleytukey", layout, axis_stride, batch_stride, static_cast<int>(active_lane_cols), B);
@@ -1553,6 +1555,12 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
         Complex* a_ptr = P.workspace.row_a(tid);
         Complex* b_ptr = P.workspace.row_b(tid);
         Complex** columns = P.workspace.column_row(tid);
+        std::complex<T>* invariant_local = nullptr;
+        if (!invariant_scratch.empty()) {
+          invariant_local = invariant_scratch.data() + static_cast<size_t>(tid) * static_cast<size_t>(stages);
+        }
+        std::vector<Complex> a_in_local(static_cast<size_t>(active_lane_cols));
+        std::vector<Complex> b_in_local(static_cast<size_t>(active_lane_cols));
         const int work_items = half * blocks * chunk_count;
         if (work_items > 0) {
 #pragma omp for schedule(static)
@@ -1574,24 +1582,26 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
             const Eigen::Index a_offset = Eigen::Index(a_index) * axis_stride;
             const Eigen::Index b_offset = Eigen::Index(b_index) * axis_stride;
             const Complex w = P.W[k * step];
-            Complex* a_in_local = P.workspace.row_a(threads > 1 ? tid : 0);
-            Complex* b_in_local = P.workspace.row_b(threads > 1 ? tid : 0);
             for (int lane = 0; lane < width; ++lane) {
               Complex* column_ptr = columns[lane];
               a_ptr[lane] = column_ptr[a_offset];
               b_ptr[lane] = column_ptr[b_offset];
-              a_in_local[lane] = a_ptr[lane];
-              b_in_local[lane] = b_ptr[lane];
+              if (!a_in_local.empty()) {
+                a_in_local[static_cast<size_t>(lane)] = a_ptr[lane];
+                b_in_local[static_cast<size_t>(lane)] = b_ptr[lane];
+              }
             }
             detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_cooleytukey);
+            T local_max_r0 = invariant_local ? invariant_local[stage_idx].real() : T(0);
+            T local_max_e = invariant_local ? invariant_local[stage_idx].imag() : T(0);
             for (int lane = 0; lane < width; ++lane) {
               Complex* column_ptr = columns[lane];
-              column_ptr[a_offset] = a_ptr[lane];
-              column_ptr[b_offset] = b_ptr[lane];
+              const Complex y0 = a_ptr[lane];
+              const Complex y1 = b_ptr[lane];
+              column_ptr[a_offset] = y0;
+              column_ptr[b_offset] = y1;
               const int batch_index = col + lane;
               if (snap.enabled() && batch_index == 0) {
-                const Complex y0 = column_ptr[a_offset];
-                const Complex y1 = column_ptr[b_offset];
                 snap.set(stage_idx, a_index, y0);
                 snap.set(stage_idx, b_index, y1);
                 if (twmap.enabled()) {
@@ -1599,25 +1609,24 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
                   twmap.set(stage_idx, a_index, tw_index);
                   twmap.set(stage_idx, b_index, tw_index);
                 }
-                if (invariant.enabled()) {
-                  const Complex a_in = a_in_local[static_cast<size_t>(lane)];
-                  const Complex b_in = b_in_local[static_cast<size_t>(lane)];
-                  const T r0 = std::abs((y0 + y1) - T(2) * a_in);
-                  // energy invariant: (|y0|^2 + |y1|^2) - 2*(|a|^2 + |b|^2)
-                  const T e = (std::norm(y0) + std::norm(y1)) - T(2) * (std::norm(a_in) + std::norm(b_in));
-                  const T abs_e = std::abs(e);
-                  const std::complex<T> prev = invariant.buf ? invariant.buf[stage_idx] : std::complex<T>(T(0), T(0));
-                  const T prev_r0 = prev.real();
-                  const T prev_e = prev.imag();
-                  const T new_r0 = std::max(prev_r0, r0);
-                  const T new_e = std::max(prev_e, abs_e);
-                  invariant.buf[stage_idx] = std::complex<T>(new_r0, new_e);
-                }
+              }
+              if (invariant_local) {
+                const Complex a_in = a_in_local.empty() ? Complex{} : a_in_local[static_cast<size_t>(lane)];
+                const Complex b_in = b_in_local.empty() ? Complex{} : b_in_local[static_cast<size_t>(lane)];
+                const T r0 = std::abs((y0 + y1) - T(2) * a_in);
+                const T e = (std::norm(y0) + std::norm(y1)) -
+                            T(2) * (std::norm(a_in) + std::norm(b_in));
+                const T abs_e = std::abs(e);
+                if (r0 > local_max_r0) local_max_r0 = r0;
+                if (abs_e > local_max_e) local_max_e = abs_e;
               }
               if (pairs.enabled() && batch_index == 0) {
                 pairs.set(stage_idx, a_index, a_index, b_index);
                 pairs.set(stage_idx, b_index, a_index, b_index);
               }
+            }
+            if (invariant_local) {
+              invariant_local[stage_idx] = std::complex<T>(local_max_r0, local_max_e);
             }
           }
         }
@@ -1628,6 +1637,7 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
       Complex* a_ptr = P.workspace.row_a(0);
       Complex* b_ptr = P.workspace.row_b(0);
       Complex** columns = P.workspace.column_row(0);
+      std::complex<T>* invariant_local = invariant_scratch.empty() ? nullptr : invariant_scratch.data();
       for (int k = 0; k < half; ++k) {
         const Complex w = P.W[k * step];
         for (int block = 0; block < blocks; ++block) {
@@ -1654,14 +1664,16 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
               b_in_local[static_cast<size_t>(lane)] = b_ptr[lane];
             }
             detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_cooleytukey);
+            T local_max_r0 = invariant_local ? invariant_local[stage_idx].real() : T(0);
+            T local_max_e = invariant_local ? invariant_local[stage_idx].imag() : T(0);
             for (int lane = 0; lane < width; ++lane) {
               Complex* column_ptr = columns[lane];
-              column_ptr[a_offset] = a_ptr[lane];
-              column_ptr[b_offset] = b_ptr[lane];
+              const Complex y0 = a_ptr[lane];
+              const Complex y1 = b_ptr[lane];
+              column_ptr[a_offset] = y0;
+              column_ptr[b_offset] = y1;
               const int batch_index = col + lane;
               if (snap.enabled() && batch_index == 0) {
-                const Complex y0 = column_ptr[a_offset];
-                const Complex y1 = column_ptr[b_offset];
                 snap.set(stage_idx, a_index, y0);
                 snap.set(stage_idx, b_index, y1);
                 if (twmap.enabled()) {
@@ -1669,25 +1681,24 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
                   twmap.set(stage_idx, a_index, tw_index);
                   twmap.set(stage_idx, b_index, tw_index);
                 }
-                if (invariant.enabled()) {
-                  const Complex a_in = a_in_local[static_cast<size_t>(lane)];
-                  const Complex b_in = b_in_local[static_cast<size_t>(lane)];
-                  const T r0 = std::abs((y0 + y1) - T(2) * a_in);
-                  // energy invariant: (|y0|^2 + |y1|^2) - 2*(|a|^2 + |b|^2)
-                  const T e = (std::norm(y0) + std::norm(y1)) - T(2) * (std::norm(a_in) + std::norm(b_in));
-                  const T abs_e = std::abs(e);
-                  const std::complex<T> prev = invariant.buf ? invariant.buf[stage_idx] : std::complex<T>(T(0), T(0));
-                  const T prev_r0 = prev.real();
-                  const T prev_e = prev.imag();
-                  const T new_r0 = std::max(prev_r0, r0);
-                  const T new_e = std::max(prev_e, abs_e);
-                  invariant.buf[stage_idx] = std::complex<T>(new_r0, new_e);
-                }
+              }
+              if (invariant_local) {
+                const Complex a_in = a_in_local[static_cast<size_t>(lane)];
+                const Complex b_in = b_in_local[static_cast<size_t>(lane)];
+                const T r0 = std::abs((y0 + y1) - T(2) * a_in);
+                const T e = (std::norm(y0) + std::norm(y1)) -
+                            T(2) * (std::norm(a_in) + std::norm(b_in));
+                const T abs_e = std::abs(e);
+                if (r0 > local_max_r0) local_max_r0 = r0;
+                if (abs_e > local_max_e) local_max_e = abs_e;
               }
               if (pairs.enabled() && batch_index == 0) {
                 pairs.set(stage_idx, a_index, a_index, b_index);
                 pairs.set(stage_idx, b_index, a_index, b_index);
               }
+            }
+            if (invariant_local) {
+              invariant_local[stage_idx] = std::complex<T>(local_max_r0, local_max_e);
             }
           }
         }
@@ -1696,6 +1707,19 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
     // Cooley–Tukey snapshots, pair records, twiddle-index, and invariants are captured at write-time above.
     if (invariant.enabled()) {
       // Nothing to do here because we updated per-write into the buffer; keep for clarity.
+    }
+  }
+
+  if (!invariant_scratch.empty()) {
+    for (int stage = 0; stage < stages; ++stage) {
+      T max_r0 = T(0);
+      T max_e = T(0);
+      for (int slot = 0; slot < invariant_slots; ++slot) {
+        const std::complex<T>& val = invariant_scratch[static_cast<size_t>(slot) * static_cast<size_t>(stages) + static_cast<size_t>(stage)];
+        if (val.real() > max_r0) max_r0 = val.real();
+        if (val.imag() > max_e) max_e = val.imag();
+      }
+      invariant.set(stage, max_r0, max_e);
     }
   }
 
@@ -1864,6 +1888,11 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
   const detail::ButterflyPairsWriter<T> pairs(layout, static_cast<std::size_t>(N), stages);
   const detail::StageInvariantWriter<T> invariant(layout, stages);
   const detail::TwiddleIndexWriter<T> twmap(layout, static_cast<std::size_t>(N), stages);
+  if (invariant.enabled()) {
+    for (int s = 0; s < stages; ++s) {
+      invariant.set(s, T(0), T(0));
+    }
+  }
   const int B = static_cast<int>(layout.batch_size);
   if (B <= 0) {
     if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);
@@ -1945,6 +1974,13 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
 
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
 
+  const int thread_slots = std::max(1, state->arena.stockham_thread_capacity);
+  std::vector<std::complex<T>> invariant_scratch;
+  if (invariant.enabled() && stages > 0) {
+    invariant_scratch.assign(static_cast<size_t>(thread_slots) * static_cast<size_t>(stages),
+                             std::complex<T>(T(0), T(0)));
+  }
+
   auto process_chunk = [&](size_t start, size_t end, int worker_id) {
     if (start >= static_cast<size_t>(B)) return;
     const int width = static_cast<int>(end - start);
@@ -1996,6 +2032,15 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
       }
     }
     const int safe_width = std::min(width, lane_cols);
+    const bool capture_metadata = (start == 0);
+    const int lane0_slot = (capture_metadata && safe_width > 0) ? 0 : -1;
+    std::complex<T>* invariant_local = nullptr;
+    if (!invariant_scratch.empty()) {
+      if (static_cast<size_t>(slot) * static_cast<size_t>(stages) >= invariant_scratch.size()) {
+        throw std::runtime_error("Invariant scratch slot exceeds allocation");
+      }
+      invariant_local = invariant_scratch.data() + static_cast<size_t>(slot) * static_cast<size_t>(stages);
+    }
     #if EIGFFT_TRACE_STOCKHAM
     if (start == 0 && worker_id == 0) {
       std::cout << "[stockham] load phase start" << std::endl;
@@ -2041,7 +2086,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
       const int segments = N >> (stage + 1);  // N / (2 * m)
       const int halfN = N >> 1;
       const int tw_step = segments;  // == N / distance
-      if (params.enabled()) {
+      if (capture_metadata && params.enabled()) {
         params.set(stage, distance, tw_step);
       }
       for (int j = 0; j < m; ++j) {
@@ -2061,37 +2106,37 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
           // per-worker scratch buffers from the PlanArena baseline buffers
           // (no heap). Otherwise call the native scatter path.
           ButterflyScatter<T>::apply(src0, src1, dst0, dst1, safe_width, w, &P.butterfly_default_stockham);
-          if (pairs.enabled()) {
+          if (capture_metadata && pairs.enabled()) {
             pairs.set(stage, out0_idx, idx0, idx1);
             pairs.set(stage, out1_idx, idx0, idx1);
           }
-          if (twmap.enabled()) {
+          if (capture_metadata && twmap.enabled()) {
             twmap.set(stage, out0_idx, tw_index);
             twmap.set(stage, out1_idx, tw_index);
           }
-          if (invariant.enabled()) {
-            const Complex a_in = src0[0];
-            const Complex b_in = src1[0];
-            const Complex y0 = dst0[0];
-            const Complex y1 = dst1[0];
-            const T r0 = std::abs((y0 + y1) - T(2) * a_in);
-            // energy invariant: (|y0|^2 + |y1|^2) - 2*(|a|^2 + |b|^2)
-            const T e = (std::norm(y0) + std::norm(y1)) - T(2) * (std::norm(a_in) + std::norm(b_in));
-            const T abs_e = std::abs(e);
-            const std::complex<T> prev = invariant.buf ? invariant.buf[stage] : std::complex<T>(T(0), T(0));
-            const T prev_r0 = prev.real();
-            const T prev_e = prev.imag();
-            const T new_r0 = std::max(prev_r0, r0);
-            const T new_e = std::max(prev_e, abs_e);
-            invariant.buf[stage] = std::complex<T>(new_r0, new_e);
+          if (invariant_local) {
+            std::complex<T>& slot_value = invariant_local[stage];
+            T max_r0 = slot_value.real();
+            T max_e = slot_value.imag();
+            for (int lane = 0; lane < safe_width; ++lane) {
+              const Complex a_in = src0[lane];
+              const Complex b_in = src1[lane];
+              const Complex y0 = dst0[lane];
+              const Complex y1 = dst1[lane];
+              const T r0 = std::abs((y0 + y1) - T(2) * a_in);
+              const T e = (std::norm(y0) + std::norm(y1)) -
+                          T(2) * (std::norm(a_in) + std::norm(b_in));
+              const T abs_e = std::abs(e);
+              if (r0 > max_r0) max_r0 = r0;
+              if (abs_e > max_e) max_e = abs_e;
+            }
+            slot_value = std::complex<T>(max_r0, max_e);
           }
       }
     }
-      if (snap.enabled() && start == 0 && safe_width > 0) {
-        const ptrdiff_t base_idx = lane_bases[0];
+      if (lane0_slot >= 0 && snap.enabled()) {
         for (int i = 0; i < N; ++i) {
-          const ptrdiff_t idx = base_idx + ptrdiff_t(i) * ptrdiff_t(axis_stride);
-          snap.set(stage, i, layout.base[idx]);
+          snap.set(stage, i, out[i * lane_capacity + lane0_slot]);
         }
       }
       std::swap(in, out);
@@ -2165,6 +2210,19 @@ const Complex* src = final_buf + i * lane_capacity;
 #if EIGFFT_TRACE_STOCKHAM
   std::cout << "[stockham] dispatch=" << dispatch_id << " parallel_for complete" << std::endl;
 #endif
+
+  if (!invariant_scratch.empty()) {
+    for (int stage = 0; stage < stages; ++stage) {
+      T max_r0 = T(0);
+      T max_e = T(0);
+      for (int slot = 0; slot < thread_slots; ++slot) {
+        const std::complex<T>& val = invariant_scratch[static_cast<size_t>(slot) * static_cast<size_t>(stages) + static_cast<size_t>(stage)];
+        if (val.real() > max_r0) max_r0 = val.real();
+        if (val.imag() > max_e) max_e = val.imag();
+      }
+      invariant.set(stage, max_r0, max_e);
+    }
+  }
 
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);
 }
