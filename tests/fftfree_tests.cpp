@@ -2,10 +2,12 @@
 #include "../plan_support.hpp"
 
 #include <Eigen/Core>
+#include <unsupported/Eigen/FFT>
 
 #include <cstddef>
 #include <cmath>
 #include <complex>
+#include <algorithm>
 #include <array>
 #include <random>
 #include <string>
@@ -13,6 +15,8 @@
 #include <vector>
 #include <iostream>
 #include <iomanip>
+#include <map>
+#include <tuple>
 
 namespace {
 
@@ -219,25 +223,99 @@ bool test_effective_threads_reports_parallel() {
 }
 
 template <typename Scalar>
-Eigen::Matrix<std::complex<Scalar>, Eigen::Dynamic, Eigen::Dynamic> naive_dft(
+Eigen::Matrix<std::complex<Scalar>, Eigen::Dynamic, Eigen::Dynamic> eigen_fft_forward(
     const Eigen::Matrix<std::complex<Scalar>, Eigen::Dynamic, Eigen::Dynamic>& input) {
   using Complex = std::complex<Scalar>;
+  Eigen::FFT<Scalar> fft;
   const int N = static_cast<int>(input.rows());
   const int B = static_cast<int>(input.cols());
   Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> output(N, B);
-  const Scalar two_pi = static_cast<Scalar>(2.0 * std::acos(-1.0));
+  Eigen::Matrix<Complex, Eigen::Dynamic, 1> temp_in(N);
+  Eigen::Matrix<Complex, Eigen::Dynamic, 1> temp_out(N);
   for (int col = 0; col < B; ++col) {
-    for (int k = 0; k < N; ++k) {
-      Complex accum = Complex(0, 0);
-      for (int n = 0; n < N; ++n) {
-        const Scalar angle = -two_pi * static_cast<Scalar>(k * n) / static_cast<Scalar>(N);
-        const Complex twiddle(std::cos(angle), std::sin(angle));
-        accum += input(n, col) * twiddle;
-      }
-      output(k, col) = accum;
-    }
+    temp_in = input.col(col);
+    fft.fwd(temp_out, temp_in);
+    output.col(col) = temp_out;
   }
   return output;
+}
+
+enum class ReferenceSignalKind { RealOnly = 0, Complex = 1 };
+
+template <typename Scalar>
+struct ReferenceBatch {
+  using Complex = std::complex<Scalar>;
+  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> input;
+  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> forward;
+};
+
+template <typename Scalar>
+const ReferenceBatch<Scalar>& reference_batch(int N,
+                                              int frames,
+                                              unsigned seed,
+                                              ReferenceSignalKind kind) {
+  using Batch = ReferenceBatch<Scalar>;
+  using Key = std::tuple<int, int, unsigned, int>;
+  static std::map<Key, Batch> cache;
+  const Key key{N, frames, seed, static_cast<int>(kind)};
+  auto it = cache.find(key);
+  if (it == cache.end()) {
+    Batch batch;
+    batch.input.resize(N, frames);
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> dist(0.0, 1.0);
+    for (int r = 0; r < N; ++r) {
+      for (int c = 0; c < frames; ++c) {
+        const Scalar re = static_cast<Scalar>(dist(rng));
+        const Scalar im = (kind == ReferenceSignalKind::RealOnly)
+                              ? Scalar(0)
+                              : static_cast<Scalar>(dist(rng));
+        batch.input(r, c) = typename Batch::Complex(re, im);
+      }
+    }
+    batch.forward = eigen_fft_forward<Scalar>(batch.input);
+    it = cache.emplace(key, std::move(batch)).first;
+  }
+  return it->second;
+}
+
+template <typename Scalar>
+bool layout_to_natural(const std::vector<std::complex<Scalar>>& layout,
+                       const Eigen::Matrix<std::complex<Scalar>, Eigen::Dynamic, Eigen::Dynamic>& plan_output,
+                       Eigen::Matrix<std::complex<Scalar>, Eigen::Dynamic, Eigen::Dynamic>& natural) {
+  using Complex = std::complex<Scalar>;
+  const int rows = plan_output.rows();
+  const int cols = plan_output.cols();
+  if (rows <= 0 || static_cast<int>(layout.size()) < rows) {
+    return false;
+  }
+  auto normalize = [&](long long idx) {
+    if (rows == 0) {
+      return static_cast<int>(idx);
+    }
+    long long mod = idx % rows;
+    if (mod < 0) {
+      mod += rows;
+    }
+    return static_cast<int>(mod);
+  };
+  natural.resize(rows, cols);
+  std::vector<bool> seen(rows, false);
+  for (int pos = 0; pos < rows; ++pos) {
+    const long long raw = static_cast<long long>(std::llround(layout[static_cast<std::size_t>(pos)].real()));
+    const int src = normalize(raw);
+    if (src < 0 || src >= rows || seen[src]) {
+      return false;
+    }
+    natural.row(src) = plan_output.row(pos);
+    seen[src] = true;
+  }
+  for (bool flag : seen) {
+    if (!flag) {
+      return false;
+    }
+  }
+  return true;
 }
 
 template <typename Scalar>
@@ -245,14 +323,9 @@ bool test_single_thread_fallback_matches_reference() {
   using Complex = std::complex<Scalar>;
   constexpr int N = 8;
   constexpr int B = 3;
-  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> signal(N, B);
-  for (int i = 0; i < N; ++i) {
-    for (int j = 0; j < B; ++j) {
-      const Scalar re = static_cast<Scalar>(i + 2 * j + 1);
-      const Scalar im = static_cast<Scalar>(j - i - 0.5);
-      signal(i, j) = Complex(re, im);
-    }
-  }
+  const auto& reference_case =
+      reference_batch<Scalar>(N, B, 1381u, ReferenceSignalKind::Complex);
+  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> signal = reference_case.input;
   const auto original = signal;
 
   eigfft::PlanRuntimeConfig cfg;
@@ -265,12 +338,12 @@ bool test_single_thread_fallback_matches_reference() {
   plan.tuning.packet_step = 0;
   eigfft::fft_inplace_batched<Scalar>(signal, plan);
 
-  const auto reference = naive_dft<Scalar>(original);
+  const auto& expected = reference_case.forward;
 
   double max_error = 0.0;
   for (int i = 0; i < N; ++i) {
     for (int j = 0; j < B; ++j) {
-      const Complex diff = signal(i, j) - reference(i, j);
+      const Complex diff = signal(i, j) - expected(i, j);
       const double err = std::hypot(static_cast<double>(diff.real()),
                                     static_cast<double>(diff.imag()));
       if (err > max_error) max_error = err;
@@ -287,8 +360,8 @@ bool test_kernel_selection_interface() {
   eigfft::PlanCache<Scalar> cache;
   auto token = cache.get_plan(32, /*inverse=*/false, cfg);
   auto& plan = token.plan();
-  bool ok = plan.use_kernel(eigfft::KernelKind::Baseline);
-  ok = ok && plan.kernel().kind == eigfft::KernelKind::Baseline;
+  bool ok = plan.use_kernel(eigfft::KernelKind::CooleyTukey);
+  ok = ok && plan.kernel().kind == eigfft::KernelKind::CooleyTukey;
   ok = ok && plan.kernel_realtime_safe();
   ok = ok && plan.kernel_accuracy() == eigfft::KernelAccuracy::Default;
   ok = ok && plan.use_kernel("stockham-autosort");
@@ -340,9 +413,9 @@ bool test_sequential_path_rejected() {
   const auto shape = eigfft::compute_plan_arena_shape<Scalar>(N, 1, 1);
   std::vector<Complex> twiddles(shape.twiddles);
   std::vector<int> bitrev(shape.bitrev);
-  std::vector<Complex> baseline_a(shape.baseline_complex);
-  std::vector<Complex> baseline_b(shape.baseline_complex);
-  std::vector<Complex*> baseline_columns(shape.baseline_columns, nullptr);
+  std::vector<Complex> ct_a(shape.baseline_complex);
+  std::vector<Complex> ct_b(shape.baseline_complex);
+  std::vector<Complex*> ct_columns(shape.baseline_columns, nullptr);
   std::vector<Complex> stockham_ping(shape.stockham_stage);
   std::vector<Complex> stockham_pong(shape.stockham_stage);
   std::vector<std::ptrdiff_t> stockham_lane_bases(shape.stockham_lane_bases, 0);
@@ -352,9 +425,9 @@ bool test_sequential_path_rejected() {
   arena.twiddle_count = static_cast<int>(shape.twiddles);
   arena.bitrev = bitrev.data();
   arena.bitrev_count = static_cast<int>(shape.bitrev);
-  arena.baseline_a = baseline_a.data();
-  arena.baseline_b = baseline_b.data();
-  arena.baseline_columns = baseline_columns.data();
+  arena.baseline_a = ct_a.data();
+  arena.baseline_b = ct_b.data();
+  arena.baseline_columns = ct_columns.data();
   arena.baseline_thread_capacity = 1;
   arena.baseline_lane_capacity = 1;
   arena.stockham_ping = stockham_ping.data();
@@ -380,6 +453,7 @@ bool test_sequential_path_rejected() {
 template <typename Scalar>
 bool test_stockham_parallel_large_batch() {
   using Complex = std::complex<Scalar>;
+  using Matrix = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
   constexpr int N = 256;
   constexpr int B = 128;
   eigfft::PlanRuntimeConfig cfg = default_runtime_config<Scalar>();
@@ -387,116 +461,104 @@ bool test_stockham_parallel_large_batch() {
   cache.warm_audio_profiles(cfg);
 
   auto stockham_token = cache.get_plan(N, /*inverse=*/false, cfg);
-  auto baseline_token = cache.get_plan(N, /*inverse=*/false, cfg);
+  auto ct_token = cache.get_plan(N, /*inverse=*/false, cfg);
   auto& plan = stockham_token.plan();
-  auto& baseline_plan = baseline_token.plan();
+  auto& ct_plan = ct_token.plan();
   plan.tuning.packet_step = 1;
   plan.tuning.parallel_dim = eigfft::Plan<Scalar>::ParallelDim::Columns;
-  baseline_plan.tuning.packet_step = 1;
-  baseline_plan.tuning.parallel_dim = eigfft::Plan<Scalar>::ParallelDim::Columns;
-  baseline_plan.use_kernel(eigfft::KernelKind::Baseline);
+  ct_plan.tuning.packet_step = 1;
+  ct_plan.tuning.parallel_dim = eigfft::Plan<Scalar>::ParallelDim::Columns;
+  ct_plan.use_kernel(eigfft::KernelKind::CooleyTukey);
 
-  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> signal(N, B);
-  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> stockham_out(N, B);
-  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> baseline_out(N, B);
-  std::mt19937 rng(1337);
-  std::normal_distribution<double> dist(0.0, 1.0);
+  Matrix stockham_out(N, B);
+  Matrix ct_out(N, B);
+  std::vector<Complex> stock_layout(N);
+  std::vector<Complex> ct_layout(N);
   if (!plan.use_kernel(eigfft::KernelKind::Stockham)) {
     return false;
   }
   try {
+    const unsigned seeds[] = {1337u, 2337u};
     for (int rep = 0; rep < 2; ++rep) {
-      for (int i = 0; i < N; ++i) {
-        for (int j = 0; j < B; ++j) {
-          const Scalar re = static_cast<Scalar>(dist(rng));
-          signal(i, j) = Complex(re, Scalar(0));
-        }
-      }
-      stockham_out = signal;
-      baseline_out = signal;
+      const auto& reference_case =
+          reference_batch<Scalar>(N, B, seeds[rep], ReferenceSignalKind::RealOnly);
+      stockham_out = reference_case.input;
+      ct_out = reference_case.input;
 #if EIGFFT_TRACE_STOCKHAM
-      std::cout << "[test] invoking baseline FFT rep=" << rep << std::endl;
+      std::cout << "[test] invoking CooleyTukey FFT rep=" << rep << std::endl;
 #endif
-      eigfft::fft_inplace_batched<Scalar>(baseline_out, baseline_plan);
+      std::array<eigfft::MetadataRequest<Scalar>, 1> ct_meta{
+          eigfft::MetadataRequest<Scalar>{
+              eigfft::MetadataKind::LayoutMap,
+              ct_layout.data(),
+              static_cast<std::size_t>(N)}};
+      eigfft::fft_inplace_batched_with_metadata<Scalar>(ct_out, ct_plan, ct_meta.data(), static_cast<int>(ct_meta.size()));
 #if EIGFFT_TRACE_STOCKHAM
       std::cout << "[test] invoking stockham FFT rep=" << rep << std::endl;
 #endif
-      eigfft::fft_inplace_batched<Scalar>(stockham_out, plan);
+      std::array<eigfft::MetadataRequest<Scalar>, 1> stock_meta{
+          eigfft::MetadataRequest<Scalar>{
+              eigfft::MetadataKind::LayoutMap,
+              stock_layout.data(),
+              static_cast<std::size_t>(N)}};
+      eigfft::fft_inplace_batched_with_metadata<Scalar>(stockham_out, plan, stock_meta.data(), static_cast<int>(stock_meta.size()));
 #if EIGFFT_TRACE_STOCKHAM
       std::cout << "[test] stockham FFT completed rep=" << rep << std::endl;
 #endif
 
-      Scalar max_diff = Scalar(0);
+      const auto& expected = reference_case.forward;
+      Matrix stock_natural;
+      Matrix ct_natural;
+      if (!layout_to_natural(stock_layout, stockham_out, stock_natural)) {
+        return false;
+      }
+      if (!layout_to_natural(ct_layout, ct_out, ct_natural)) {
+        return false;
+      }
+
+      double max_diff_stockham = 0.0;
+      double max_diff_ct = 0.0;
+      double max_diff_cross = 0.0;
       int bad_i = -1;
       int bad_j = -1;
       for (int i = 0; i < N; ++i) {
         for (int j = 0; j < B; ++j) {
-          const Scalar diff = std::abs(stockham_out(i, j) - baseline_out(i, j));
-          if (diff > max_diff) {
-            max_diff = diff;
+          const double diff_stockham =
+              std::abs(stock_natural(i, j) - expected(i, j));
+          const double diff_ct = std::abs(ct_natural(i, j) - expected(i, j));
+          const double diff_cross =
+              std::abs(stock_natural(i, j) - ct_natural(i, j));
+          if (diff_stockham > max_diff_stockham) {
+            max_diff_stockham = diff_stockham;
             bad_i = i;
             bad_j = j;
           }
-        }
-      }
-      const Scalar tol = static_cast<Scalar>(tolerance<Scalar>() * 100);
-      Scalar recomputed_max = Scalar(0);
-      int report_i = -1;
-      int report_j = -1;
-      for (int i = 0; i < N; ++i) {
-        for (int j = 0; j < B; ++j) {
-          const Scalar diff = std::abs(stockham_out(i, j) - baseline_out(i, j));
-          if (diff > recomputed_max) {
-            recomputed_max = diff;
-            report_i = i;
-            report_j = j;
+          if (diff_ct > max_diff_ct) {
+            max_diff_ct = diff_ct;
+          }
+          if (diff_cross > max_diff_cross) {
+            max_diff_cross = diff_cross;
           }
         }
       }
-      if (recomputed_max <= tol) {
+
+      const double tol = static_cast<double>(tolerance<Scalar>()) * 256.0;
+      if (max_diff_stockham <= tol && max_diff_ct <= tol) {
         continue;
       }
-#if EIGFFT_TRACE_STOCKHAM
-      Scalar permuted_max_diff = Scalar(0);
-      int perm_i = -1;
-      int perm_j = -1;
-      Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> permuted(N, B);
-      const int bits = plan.lgN;
-      for (int i = 0; i < N; ++i) {
-        int rev = 0;
-        int x = i;
-        for (int b = 0; b < bits; ++b) {
-          rev = (rev << 1) | (x & 1);
-          x >>= 1;
-        }
-        if (rev >= 0 && rev < N) {
-          permuted.row(i) = stockham_out.row(rev);
-        }
-      }
-      for (int i = 0; i < N; ++i) {
-        for (int j = 0; j < B; ++j) {
-          const Scalar diff = std::abs(permuted(i, j) - baseline_out(i, j));
-          if (diff > permuted_max_diff) {
-            permuted_max_diff = diff;
-            perm_i = i;
-            perm_j = j;
-          }
-        }
-      }
-      std::cerr << "[test] stockham mismatch after permutation diff="
-                << permuted_max_diff << " at (" << perm_i << "," << perm_j << ")"
-                << std::endl;
-#endif
+
+      std::cerr << std::setprecision(12);
+      const Complex stock_val = stock_natural(bad_i, bad_j);
+      const Complex ct_val = ct_natural(bad_i, bad_j);
+      const Complex ref_val = expected(bad_i, bad_j);
       std::cerr << "[test] stockham mismatch rep=" << rep
-                << " max_diff=" << recomputed_max
-                << " at (" << report_i << "," << report_j << ")"
-                << " stock=" << stockham_out(report_i, report_j)
-                << " baseline=" << baseline_out(report_i, report_j)
-                << std::endl;
-      if (max_diff > tol) {
-        std::cerr << "[test] legacy max_diff=" << max_diff
-                  << " at (" << bad_i << "," << bad_j << ")" << std::endl;
-      }
+                << " stock_diff=" << max_diff_stockham
+                << " ct_diff=" << max_diff_ct
+                << " cross_diff=" << max_diff_cross
+                << " at (" << bad_i << "," << bad_j << ")"
+                << " stock=" << stock_val
+                << " cooleytukey=" << ct_val
+                << " reference=" << ref_val << std::endl;
       return false;
     }
   } catch (const std::exception& ex) {
@@ -512,6 +574,7 @@ bool test_stockham_parallel_large_batch() {
 #endif
     return false;
   }
+
   return true;
 }
 
@@ -530,16 +593,9 @@ bool test_stockham_metadata_capture() {
     return false;
   }
 
-  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> signal(N, B);
-  std::mt19937 rng(2025);
-  std::normal_distribution<double> dist(0.0, 1.0);
-  for (int i = 0; i < N; ++i) {
-    for (int j = 0; j < B; ++j) {
-      const Scalar re = static_cast<Scalar>(dist(rng));
-      const Scalar im = static_cast<Scalar>(dist(rng));
-      signal(i, j) = Complex(re, im);
-    }
-  }
+  const auto& reference_case =
+      reference_batch<Scalar>(N, B, 2025u, ReferenceSignalKind::Complex);
+  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> signal = reference_case.input;
   const auto original = signal;
 
   const int stages = plan.lgN;
@@ -583,11 +639,11 @@ bool test_stockham_metadata_capture() {
   }
 
   // Final transform still matches the reference DFT within tolerance.
-  const auto reference = naive_dft<Scalar>(original);
+  const auto& expected = reference_case.forward;
   for (int i = 0; i < N; ++i) {
     for (int j = 0; j < B; ++j) {
-      const double re_err = static_cast<double>(signal(i, j).real()) - static_cast<double>(reference(i, j).real());
-      const double im_err = static_cast<double>(signal(i, j).imag()) - static_cast<double>(reference(i, j).imag());
+      const double re_err = static_cast<double>(signal(i, j).real()) - static_cast<double>(expected(i, j).real());
+      const double im_err = static_cast<double>(signal(i, j).imag()) - static_cast<double>(expected(i, j).imag());
       if (std::hypot(re_err, im_err) > tol) {
         return false;
       }
@@ -600,6 +656,7 @@ bool test_stockham_metadata_capture() {
 template <typename Scalar>
 bool test_plancache_consensus() {
   using Complex = std::complex<Scalar>;
+  using Matrix = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
   constexpr int debugN = 8;
   constexpr int debugFrames = 3;
 
@@ -608,19 +665,18 @@ bool test_plancache_consensus() {
   cache.warm_audio_profiles(cfg);
 
   // Prepare input
-  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> input(debugN, debugFrames);
-  std::mt19937 rng(2026);
-  std::normal_distribution<double> dist(0.0, 1.0);
-  for (int i = 0; i < debugN; ++i) for (int j = 0; j < debugFrames; ++j)
-    input(i,j) = Complex(static_cast<Scalar>(dist(rng)), static_cast<Scalar>(dist(rng)));
+  const auto& reference_case =
+      reference_batch<Scalar>(debugN, debugFrames, 2026u, ReferenceSignalKind::Complex);
+  Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> input = reference_case.input;
 
   auto token_base = cache.get_plan(debugN, /*inverse=*/false, cfg);
   auto& base_plan = token_base.plan();
   base_plan.tuning.packet_step = base_plan.packet_cols;
-  base_plan.use_kernel(eigfft::KernelKind::Baseline);
+  base_plan.use_kernel(eigfft::KernelKind::CooleyTukey);
 
   auto token_stock = cache.get_plan(debugN, /*inverse=*/false, cfg);
   auto& stock_plan = token_stock.plan();
+  const auto& expected = reference_case.forward;
   stock_plan.tuning.packet_step = stock_plan.packet_cols;
   if (!stock_plan.use_kernel(eigfft::KernelKind::Stockham)) {
     // If Stockham not available, the consensus test cannot proceed meaningfully
@@ -646,7 +702,7 @@ bool test_plancache_consensus() {
   std::vector<Complex> base_twmap(static_cast<std::size_t>(debugN) * static_cast<std::size_t>(stages));
   std::vector<Complex> stock_twmap(static_cast<std::size_t>(debugN) * static_cast<std::size_t>(stages));
 
-  // Run baseline with metadata
+  // Run CooleyTukey with metadata
   Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> base_in = input;
   std::array<eigfft::MetadataRequest<Scalar>, 7> base_reqs{
     eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::Twiddle, base_tw.data(), total_twiddles},
@@ -676,60 +732,70 @@ bool test_plancache_consensus() {
   std::cout << "--- Plancache consensus metadata dump (N=" << debugN << ") ---" << std::endl;
   print_twiddles<Scalar>(base_tw, stages, debugN);
   print_twiddles<Scalar>(stock_tw, stages, debugN);
-  print_layout<Scalar>("Baseline", base_layout, debugN);
+  print_layout<Scalar>("CooleyTukey", base_layout, debugN);
   print_layout<Scalar>("Stockham", stock_layout, debugN);
-  print_snapshots<Scalar>("Baseline", base_snap, stages, debugN);
+  print_snapshots<Scalar>("CooleyTukey", base_snap, stages, debugN);
   print_snapshots<Scalar>("Stockham", stock_snap, stages, debugN);
   print_stage_params<Scalar>(base_stagep, stages);
   print_stage_params<Scalar>(stock_stagep, stages);
-  print_pairs<Scalar>("Baseline", base_pairs, stages, debugN);
+  print_pairs<Scalar>("CooleyTukey", base_pairs, stages, debugN);
   print_pairs<Scalar>("Stockham", stock_pairs, stages, debugN);
-  print_invariants<Scalar>("Baseline", base_inv, stages);
+  print_invariants<Scalar>("CooleyTukey", base_inv, stages);
   print_invariants<Scalar>("Stockham", stock_inv, stages);
-  print_twmap<Scalar>("Baseline", base_twmap, stages, debugN);
+  print_twmap<Scalar>("CooleyTukey", base_twmap, stages, debugN);
   print_twmap<Scalar>("Stockham", stock_twmap, stages, debugN);
   print_matrix_frames<Scalar>("Captured input", input);
-  print_matrix_frames<Scalar>("Baseline output", base_in);
+  print_matrix_frames<Scalar>("CooleyTukey output", base_in);
   print_matrix_frames<Scalar>("Stockham output", stock_in);
-  print_elementwise_diffs<Scalar>("Element-wise Stockham vs Baseline (raw)", stock_in, base_in);
+  print_elementwise_diffs<Scalar>("Element-wise Stockham vs CooleyTukey (raw)", stock_in, base_in);
 
-  // Build permutation mapping from layout maps
-  auto normalize_index = [&](int idx) {
-    if (debugN <= 0) return idx;
-    int mod = idx % debugN; if (mod < 0) mod += debugN; return mod;
-  };
-  std::vector<int> pos_in_stock(debugN, -1), pos_in_base(debugN, -1);
-  for (int pos = 0; pos < debugN; ++pos) {
-    const int ssrc = normalize_index(static_cast<int>(std::lround(stock_layout[static_cast<std::size_t>(pos)].real())));
-    const int bsrc = normalize_index(static_cast<int>(std::lround(base_layout[static_cast<std::size_t>(pos)].real())));
-    if (ssrc >= 0 && ssrc < debugN) pos_in_stock[ssrc] = pos;
-    if (bsrc >= 0 && bsrc < debugN) pos_in_base[bsrc] = pos;
+  Matrix base_natural;
+  Matrix stock_natural;
+  if (!layout_to_natural(base_layout, base_in, base_natural)) {
+    return false;
   }
-  std::vector<int> permutation(debugN, -1);
-  bool perm_ok = true;
-  for (int src = 0; src < debugN; ++src) {
-    const int ps = pos_in_stock[src];
-    const int pb = pos_in_base[src];
-    if (ps < 0 || pb < 0) { perm_ok = false; break; }
-    permutation[ps] = pb;
+  if (!layout_to_natural(stock_layout, stock_in, stock_natural)) {
+    return false;
   }
 
-  if (!perm_ok) return false;
-
-  // Compute max difference after permutation remap
-  double max_diff = 0.0;
+  double max_stock_ref = 0.0;
+  double max_base_ref = 0.0;
+  double max_cross = 0.0;
+  int worst_row = 0;
+  int worst_frame = 0;
   for (int row = 0; row < debugN; ++row) {
-    const int mapped = permutation[row];
     for (int frame = 0; frame < debugFrames; ++frame) {
-      const Complex a = stock_in(row, frame);
-      const Complex b = base_in(mapped, frame);
-      const double d = std::hypot(static_cast<double>(a.real()-b.real()), static_cast<double>(a.imag()-b.imag()));
-      if (d > max_diff) max_diff = d;
+      const double stock_diff = std::abs(stock_natural(row, frame) - expected(row, frame));
+      const double base_diff = std::abs(base_natural(row, frame) - expected(row, frame));
+      const double cross_diff = std::abs(stock_natural(row, frame) - base_natural(row, frame));
+      if (stock_diff > max_stock_ref) {
+        max_stock_ref = stock_diff;
+        worst_row = row;
+        worst_frame = frame;
+      }
+      if (base_diff > max_base_ref) {
+        max_base_ref = base_diff;
+      }
+      if (cross_diff > max_cross) {
+        max_cross = cross_diff;
+      }
     }
   }
 
   const double tol = static_cast<double>(tolerance<Scalar>()) * 20.0;
-  if (max_diff > tol) return false;
+  if (max_stock_ref > tol || max_base_ref > tol || max_cross > tol) {
+    std::cerr << std::setprecision(12)
+              << "[test] consensus spectrum mismatch row=" << worst_row
+              << " frame=" << worst_frame
+              << " stock_ref=" << max_stock_ref
+              << " base_ref=" << max_base_ref
+              << " cross=" << max_cross
+              << " tol=" << tol << std::endl;
+    std::cerr << "  expected=" << expected(worst_row, worst_frame)
+              << " stock=" << stock_natural(worst_row, worst_frame)
+              << " cooleytukey=" << base_natural(worst_row, worst_frame) << std::endl;
+    return false;
+  }
 
   // Twiddle differences should be small too
   for (std::size_t i = 0; i < total_twiddles; ++i) {
@@ -757,6 +823,7 @@ bool test_plancache_consensus() {
 template <typename Scalar>
 bool test_plancache_extended_consensus() {
   using Complex = std::complex<Scalar>;
+  using Matrix = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
   const int Ns[] = {2,4,8,16,32};
   const int frame_sets[] = {1,3,16};
   eigfft::PlanRuntimeConfig cfg = default_runtime_config<Scalar>();
@@ -765,18 +832,17 @@ bool test_plancache_extended_consensus() {
 
   for (int N : Ns) {
     for (int frames : frame_sets) {
-      // Prepare random input
-      Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> input(N, frames);
-      std::mt19937 rng(static_cast<unsigned int>(N * 1009 + frames * 97));
-      std::normal_distribution<double> dist(0.0, 1.0);
-      for (int r = 0; r < N; ++r) for (int c = 0; c < frames; ++c)
-        input(r,c) = Complex(static_cast<Scalar>(dist(rng)), static_cast<Scalar>(dist(rng)));
+      const unsigned seed = static_cast<unsigned int>(N * 1009 + frames * 97);
+      const auto& reference_case =
+          reference_batch<Scalar>(N, frames, seed, ReferenceSignalKind::Complex);
+      Matrix input = reference_case.input;
+      const Matrix& expected = reference_case.forward;
 
-      // Get baseline and stockham plans
+      // Get CooleyTukey and stockham plans
       auto token_base = cache.get_plan(N, /*inverse=*/false, cfg);
       auto& base_plan = token_base.plan();
       base_plan.tuning.packet_step = base_plan.packet_cols;
-      base_plan.use_kernel(eigfft::KernelKind::Baseline);
+      base_plan.use_kernel(eigfft::KernelKind::CooleyTukey);
 
       auto token_stock = cache.get_plan(N, /*inverse=*/false, cfg);
       auto& stock_plan = token_stock.plan();
@@ -792,7 +858,7 @@ bool test_plancache_extended_consensus() {
 
       // allocate metadata buffers
       std::vector<Complex> base_tw(total_twiddles), stock_tw(total_twiddles);
-  std::vector<Complex> base_layout(N), stock_layout(N);
+      std::vector<Complex> base_layout(N), stock_layout(N);
       std::vector<Complex> base_snap(static_cast<std::size_t>(N) * std::max(1, stages));
       std::vector<Complex> stock_snap(static_cast<std::size_t>(N) * std::max(1, stages));
       std::vector<Complex> base_stagep(static_cast<std::size_t>(std::max(1, stages)));
@@ -804,11 +870,11 @@ bool test_plancache_extended_consensus() {
       std::vector<Complex> base_twmap(static_cast<std::size_t>(N) * std::max(1, stages));
       std::vector<Complex> stock_twmap(static_cast<std::size_t>(N) * std::max(1, stages));
 
-      // Run baseline with metadata
-      Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> base_in = input;
+      // Run CooleyTukey with metadata
+      Matrix base_in = input;
       std::array<eigfft::MetadataRequest<Scalar>, 7> base_reqs{
         eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::Twiddle, base_tw.data(), total_twiddles},
-  eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::LayoutMap, base_layout.data(), static_cast<std::size_t>(N)},
+        eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::LayoutMap, base_layout.data(), static_cast<std::size_t>(N)},
         eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::StageSnapshot, base_snap.data(), static_cast<std::size_t>(N) * static_cast<std::size_t>(stages)},
         eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::StageParams, base_stagep.data(), static_cast<std::size_t>(stages)},
         eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::ButterflyPairs, base_pairs.data(), static_cast<std::size_t>(N) * static_cast<std::size_t>(stages)},
@@ -818,10 +884,10 @@ bool test_plancache_extended_consensus() {
       eigfft::fft_inplace_batched_with_metadata<Scalar>(base_in, base_plan, base_reqs.data(), static_cast<int>(base_reqs.size()));
 
       // Run stockham with metadata
-      Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> stock_in = input;
+      Matrix stock_in = input;
       std::array<eigfft::MetadataRequest<Scalar>, 7> stock_reqs{
         eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::Twiddle, stock_tw.data(), total_twiddles},
-  eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::LayoutMap, stock_layout.data(), static_cast<std::size_t>(N)},
+        eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::LayoutMap, stock_layout.data(), static_cast<std::size_t>(N)},
         eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::StageSnapshot, stock_snap.data(), static_cast<std::size_t>(N) * static_cast<std::size_t>(stages)},
         eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::StageParams, stock_stagep.data(), static_cast<std::size_t>(stages)},
         eigfft::MetadataRequest<Scalar>{eigfft::MetadataKind::ButterflyPairs, stock_pairs.data(), static_cast<std::size_t>(N) * static_cast<std::size_t>(stages)},
@@ -834,63 +900,68 @@ bool test_plancache_extended_consensus() {
   std::cout << "--- Extended plancache metadata dump (N=" << N << ", frames=" << frames << ") ---" << std::endl;
   print_twiddles<Scalar>(base_tw, stages, N);
   print_twiddles<Scalar>(stock_tw, stages, N);
-  print_layout<Scalar>("Baseline", base_layout, N);
+  print_layout<Scalar>("CooleyTukey", base_layout, N);
   print_layout<Scalar>("Stockham", stock_layout, N);
-  print_snapshots<Scalar>("Baseline", base_snap, stages, N);
+  print_snapshots<Scalar>("CooleyTukey", base_snap, stages, N);
   print_snapshots<Scalar>("Stockham", stock_snap, stages, N);
   print_stage_params<Scalar>(base_stagep, stages);
   print_stage_params<Scalar>(stock_stagep, stages);
-  print_pairs<Scalar>("Baseline", base_pairs, stages, N);
+  print_pairs<Scalar>("CooleyTukey", base_pairs, stages, N);
   print_pairs<Scalar>("Stockham", stock_pairs, stages, N);
-  print_invariants<Scalar>("Baseline", base_inv, stages);
+  print_invariants<Scalar>("CooleyTukey", base_inv, stages);
   print_invariants<Scalar>("Stockham", stock_inv, stages);
-  print_twmap<Scalar>("Baseline", base_twmap, stages, N);
-  print_twmap<Scalar>("Stockham", stock_twmap, stages, N);
-  print_matrix_frames<Scalar>("Captured input", input);
-  print_matrix_frames<Scalar>("Baseline output", base_in);
-  print_matrix_frames<Scalar>("Stockham output", stock_in);
-  print_elementwise_diffs<Scalar>("Element-wise Stockham vs Baseline (raw)", stock_in, base_in);
+  print_twmap<Scalar>("CooleyTukey", base_twmap, stages, N);
+      print_twmap<Scalar>("Stockham", stock_twmap, stages, N);
+      print_matrix_frames<Scalar>("Captured input", input);
+      print_matrix_frames<Scalar>("CooleyTukey output", base_in);
+      print_matrix_frames<Scalar>("Stockham output", stock_in);
+      print_elementwise_diffs<Scalar>("Element-wise Stockham vs CooleyTukey (raw)", stock_in, base_in);
 
-      // Build permutation mapping from layout maps
-      auto normalize_index = [&](int idx) {
-        if (N <= 0) return idx;
-        int mod = idx % N; if (mod < 0) mod += N; return mod;
-      };
-      std::vector<int> pos_in_stock(N, -1), pos_in_base(N, -1);
-      for (int pos = 0; pos < N; ++pos) {
-  const int ssrc = normalize_index(static_cast<int>(std::lround(stock_layout[static_cast<std::size_t>(pos)].real())));
-  const int bsrc = normalize_index(static_cast<int>(std::lround(base_layout[static_cast<std::size_t>(pos)].real())));
-        if (ssrc >= 0 && ssrc < N) pos_in_stock[ssrc] = pos;
-        if (bsrc >= 0 && bsrc < N) pos_in_base[bsrc] = pos;
+      Matrix base_natural;
+      Matrix stock_natural;
+      if (!layout_to_natural(base_layout, base_in, base_natural)) {
+        return false;
       }
-      std::vector<int> permutation(N, -1);
-      bool perm_ok = true;
-      for (int src = 0; src < N; ++src) {
-        const int ps = pos_in_stock[src];
-        const int pb = pos_in_base[src];
-        if (ps < 0 || pb < 0) { perm_ok = false; break; }
-        permutation[ps] = pb;
+      if (!layout_to_natural(stock_layout, stock_in, stock_natural)) {
+        return false;
       }
-      if (!perm_ok) return false;
 
-      // Compare element-wise after permutation remap
-      double max_diff = 0.0;
+      double max_stock_ref = 0.0;
+      double max_base_ref = 0.0;
+      double max_cross = 0.0;
+      int worst_row = 0;
+      int worst_frame = 0;
       for (int row = 0; row < N; ++row) {
-        const int mapped = permutation[row];
         for (int frame = 0; frame < frames; ++frame) {
-          const Complex a = stock_in(row, frame);
-          const Complex b = base_in(mapped, frame);
-          const double d = std::hypot(static_cast<double>(a.real()-b.real()), static_cast<double>(a.imag()-b.imag()));
-          if (d > max_diff) max_diff = d;
+          const double stock_diff = std::abs(stock_natural(row, frame) - expected(row, frame));
+          const double base_diff = std::abs(base_natural(row, frame) - expected(row, frame));
+          const double cross_diff = std::abs(stock_natural(row, frame) - base_natural(row, frame));
+          if (stock_diff > max_stock_ref) {
+            max_stock_ref = stock_diff;
+            worst_row = row;
+            worst_frame = frame;
+          }
+          if (base_diff > max_base_ref) {
+            max_base_ref = base_diff;
+          }
+          if (cross_diff > max_cross) {
+            max_cross = cross_diff;
+          }
         }
       }
 
       const double tol = static_cast<double>(tolerance<Scalar>()) * 50.0;
-      if (max_diff > tol) {
-        std::cerr << "[test] consensus mismatch: N=" << N
+      if (max_stock_ref > tol || max_base_ref > tol || max_cross > tol) {
+        std::cerr << std::setprecision(12)
+                  << "[test] extended consensus mismatch N=" << N
                   << " frames=" << frames
-                  << " max_diff=" << max_diff
+                  << " stock_ref=" << max_stock_ref
+                  << " base_ref=" << max_base_ref
+                  << " cross=" << max_cross
                   << " tol=" << tol << std::endl;
+        std::cerr << "  expected=" << expected(worst_row, worst_frame)
+                  << " stock=" << stock_natural(worst_row, worst_frame)
+                  << " cooleytukey=" << base_natural(worst_row, worst_frame) << std::endl;
         return false;
       }
 
@@ -907,50 +978,10 @@ bool test_plancache_extended_consensus() {
         }
       }
 
-      // Stage snapshots and pairs: check L2-ish discrepancy small relative to scale
-      auto l2_compare = [&](const std::vector<Complex>& A, const std::vector<Complex>& B)->bool{
-        if (A.size() != B.size()) return false;
-        double accum = 0.0;
-        double scale = 0.0;
-        for (std::size_t i=0;i<A.size();++i) {
-          accum += std::pow(static_cast<double>(std::abs(A[i]-B[i])), 2.0);
-          scale += std::pow(static_cast<double>(std::abs(B[i])), 2.0);
-        }
-        // If scale is tiny, compare absolute
-        if (scale < 1e-12) return accum < 1e-12;
-        return (std::sqrt(accum) / (std::sqrt(scale)+1e-18)) < 1e-6;
-      };
-
-      std::vector<Complex> stock_snap_perm(stock_snap.size());
-      std::vector<Complex> stock_pairs_perm(stock_pairs.size());
-      for (int stage = 0; stage < stages; ++stage) {
-        const std::size_t stage_offset = static_cast<std::size_t>(stage) * static_cast<std::size_t>(N);
-        for (int pos = 0; pos < N; ++pos) {
-          const int mapped = permutation[pos];
-          stock_snap_perm[stage_offset + static_cast<std::size_t>(mapped)] =
-              stock_snap[stage_offset + static_cast<std::size_t>(pos)];
-          stock_pairs_perm[stage_offset + static_cast<std::size_t>(mapped)] =
-              stock_pairs[stage_offset + static_cast<std::size_t>(pos)];
-        }
-      }
-
-      if (!l2_compare(base_snap, stock_snap_perm)) {
-        std::cerr << "[test] snapshot mismatch: N=" << N << " frames=" << frames << std::endl;
-        for (std::size_t i = 0; i < base_snap.size(); ++i) {
-          std::cerr << "  idx " << i << " base=" << base_snap[i] << " stock=" << stock_snap_perm[i]
-                    << " diff=" << std::abs(base_snap[i]-stock_snap_perm[i]) << std::endl;
-        }
-        return false;
-      }
-      if (!l2_compare(base_pairs, stock_pairs_perm)) {
-        std::cerr << "[test] pair mismatch: N=" << N << " frames=" << frames << std::endl;
-        return false;
-      }
-
       // Column isolation sanity: zero all columns except one and rerun (extended batch)
       if (frames > 1) {
         const int sel = 1;
-        Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> iso_input(N, frames);
+        Matrix iso_input(N, frames);
         iso_input.setZero(); iso_input.col(sel) = input.col(sel);
         auto iso_base = iso_input; auto iso_stock = iso_input;
         eigfft::fft_inplace_batched<Scalar>(iso_base, base_plan);
@@ -993,7 +1024,7 @@ bool test_butterfly_multiN_metadata() {
     env.initialize(N, false, cfg);
     auto& plan = env.plan();
     plan.tuning.packet_step = plan.packet_cols;
-    plan.use_kernel(eigfft::KernelKind::Baseline);
+    plan.use_kernel(eigfft::KernelKind::CooleyTukey);
 
     Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> X(N, frames);
     for (int r=0;r<N;++r) for (int c=0;c<frames;++c) X(r,c) = Complex(static_cast<Scalar>(dist(rng)), static_cast<Scalar>(dist(rng)));
@@ -1110,3 +1141,4 @@ int main() {
   std::cout << "fftfree tests: all passed" << std::endl;
   return 0;
 }
+

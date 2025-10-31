@@ -57,7 +57,7 @@ struct AlgorithmSpec {
 };
 
 static const std::vector<AlgorithmSpec> kAlgorithms{
-    {eigfft::KernelKind::Baseline, "baseline-cooleytukey"},
+    {eigfft::KernelKind::CooleyTukey, "cooleytukey"},
     {eigfft::KernelKind::Stockham, "stockham-autosort"},
 };
 

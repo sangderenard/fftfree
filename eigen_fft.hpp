@@ -648,20 +648,20 @@ struct TwiddleIndexWriter {
 
 }  // namespace detail
 
-enum class KernelKind { Baseline, Stockham, External };
+enum class KernelKind { CooleyTukey, Stockham, External };
 
 enum class KernelAccuracy { Default, HighPrecision, Reference };
 
 namespace detail {
 
 template<class T>
-void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx);
+void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx);
 
 template<class T>
-std::unique_ptr<KernelContext> baseline_create_state(Plan<T>& P);
+std::unique_ptr<KernelContext> cooleytukey_create_state(Plan<T>& P);
 
 template<class T>
-void baseline_destroy_state(Plan<T>& P, KernelContext* ctx);
+void cooleytukey_destroy_state(Plan<T>& P, KernelContext* ctx);
 
 template<class T>
 void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx);
@@ -703,7 +703,7 @@ template<class T> struct Plan {
   // override these on the Plan before dispatch to change butterfly behavior
   // (e.g. select DIF vs DIT, set conjugation). Defaults preserve legacy
   // behavior (Radix2_DIT, no conjugation).
-  ButterflyConfig<T> butterfly_default_baseline;
+  ButterflyConfig<T> butterfly_default_cooleytukey;
   ButterflyConfig<T> butterfly_default_stockham;
   ButterflyConfig<T> butterfly_default_external;
 
@@ -821,7 +821,7 @@ template<class T> struct Plan {
   std::unique_ptr<KernelContext> kernel_state_;
 
   struct KernelDescriptor {
-    KernelKind kind = KernelKind::Baseline;
+    KernelKind kind = KernelKind::CooleyTukey;
     const char* name = nullptr;
     KernelAccuracy accuracy = KernelAccuracy::Default;
     bool realtime_safe = true;
@@ -1038,18 +1038,18 @@ template<class T> struct Plan {
   workspace.bind(*this);
   const int warm_threads = effective_threads(packet_cols);
   workspace.ensure(warm_threads, packet_cols);
-    select_kernel(baseline_kernel());
+    select_kernel(cooleytukey_kernel());
   // initialize butterfly defaults per algorithm (no allocations in hot path)
-  butterfly_default_baseline.radix = ButterflyRadix::Radix2;
-  butterfly_default_baseline.method = ButterflyMethod::DIT;
-  butterfly_default_baseline.tw_place = TwiddlePlacement::PreRHS;
-  butterfly_default_baseline.forward = true;
-  butterfly_default_baseline.conjugate_tw = false;
-  butterfly_default_baseline.simd_width = 1;
+  butterfly_default_cooleytukey.radix = ButterflyRadix::Radix2;
+  butterfly_default_cooleytukey.method = ButterflyMethod::DIT;
+  butterfly_default_cooleytukey.tw_place = TwiddlePlacement::PreRHS;
+  butterfly_default_cooleytukey.forward = true;
+  butterfly_default_cooleytukey.conjugate_tw = false;
+  butterfly_default_cooleytukey.simd_width = 1;
 
-  butterfly_default_stockham = butterfly_default_baseline;
+  butterfly_default_stockham = butterfly_default_cooleytukey;
 
-  butterfly_default_external = butterfly_default_baseline;
+  butterfly_default_external = butterfly_default_cooleytukey;
   }
 
   ~Plan() {
@@ -1125,7 +1125,7 @@ template<class T> struct Plan {
   }
 
   const KernelDescriptor& kernel() const {
-    return kernel_desc_ ? *kernel_desc_ : baseline_kernel();
+    return kernel_desc_ ? *kernel_desc_ : cooleytukey_kernel();
   }
 
   bool use_kernel(KernelKind kind) {
@@ -1151,7 +1151,7 @@ template<class T> struct Plan {
     return kernel_state_.get();
   }
 
-  static const KernelDescriptor& baseline_kernel();
+  static const KernelDescriptor& cooleytukey_kernel();
   static const KernelDescriptor& stockham_kernel();
   static const KernelDescriptor& external_kernel();
   static const std::array<const KernelDescriptor*, 3>& builtin_kernels();
@@ -1171,8 +1171,8 @@ template<class T> struct Plan {
 
   const KernelDescriptor* find_kernel(KernelKind kind) const {
     switch (kind) {
-      case KernelKind::Baseline:
-        return &baseline_kernel();
+      case KernelKind::CooleyTukey:
+        return &cooleytukey_kernel();
       case KernelKind::Stockham:
         return &stockham_kernel();
       case KernelKind::External:
@@ -1263,7 +1263,7 @@ inline void prepare_plan_workspace(const Plan<T>& P, const AxisLayout<T>& layout
 }
 
 template<class T>
-inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx)
+inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx)
 {
   (void)ctx;
   using Complex = typename Plan<T>::Complex;
@@ -1275,8 +1275,27 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
   metadata.record_plan_twiddles(P);
   const detail::LayoutMetadataWriter<T> layout_writer(layout, static_cast<std::size_t>(N));
   if (layout_writer.enabled()) {
+    std::vector<int> current_map(N);
+    std::vector<int> next_map(N);
+    for (int i = 0; i < N; ++i) current_map[i] = i;
+    for (int stage = 0; stage < stages; ++stage) {
+      const int m = 1 << stage;
+      const int segments = N >> (stage + 1);  // N / (2 * m)
+      const int halfN = N >> 1;
+      for (int j = 0; j < m; ++j) {
+        for (int g = 0; g < segments; ++g) {
+          const int idx0 = (2 * j) * segments + g;
+          const int idx1 = idx0 + segments;
+          const int out0 = j * segments + g;
+          const int out1 = out0 + halfN;
+          next_map[out0] = current_map[idx0];
+          next_map[out1] = current_map[idx1];
+        }
+      }
+      current_map.swap(next_map);
+    }
     for (int pos = 0; pos < N; ++pos) {
-      layout_writer.set(static_cast<std::size_t>(pos), P.bitrev[pos]);
+      layout_writer.set(static_cast<std::size_t>(pos), current_map[pos]);
     }
   }
   const detail::StageSnapshotWriter<T> snap(layout, static_cast<std::size_t>(N), stages);
@@ -1294,13 +1313,13 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
   const bool parallel_enabled = P.use_threads && threads > 1;
 
   const int chunk_count = (B + active_lane_cols - 1) / active_lane_cols;
-  // Print actual stride/ptr info used by Baseline (helpful for batch-pitch mismatch)
-  std::cout << "[baseline] axis_stride=" << axis_stride
+  // Print actual stride/ptr info used by Cooley–Tukey (helpful for batch-pitch mismatch)
+  std::cout << "[cooleytukey] axis_stride=" << axis_stride
             << " batch_stride=" << batch_stride
             << " lane_cols=" << active_lane_cols << std::endl;
   for (int bi = 0; bi < std::min(3, B); ++bi) {
     const void* ptr = static_cast<const void*>(layout.base + static_cast<std::size_t>(bi) * (std::size_t)batch_stride);
-    std::cout << "[baseline] base[" << bi << "]=" << ptr << std::endl;
+    std::cout << "[cooleytukey] base[" << bi << "]=" << ptr << std::endl;
   }
   const int* bitrev = P.bitrev;
 
@@ -1404,7 +1423,7 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
               a_in_local[lane] = a_ptr[lane];
               b_in_local[lane] = b_ptr[lane];
             }
-            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_baseline);
+            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_cooleytukey);
             for (int lane = 0; lane < width; ++lane) {
               Complex* column_ptr = columns[lane];
               column_ptr[a_offset] = a_ptr[lane];
@@ -1474,7 +1493,7 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
               a_in_local[static_cast<size_t>(lane)] = a_ptr[lane];
               b_in_local[static_cast<size_t>(lane)] = b_ptr[lane];
             }
-            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_baseline);
+            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_cooleytukey);
             for (int lane = 0; lane < width; ++lane) {
               Complex* column_ptr = columns[lane];
               column_ptr[a_offset] = a_ptr[lane];
@@ -1514,7 +1533,7 @@ inline void baseline_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout,
         }
       }
     }
-    // Baseline snapshots, pair records, twiddle-index, and invariants are captured at write-time above.
+    // Cooley–Tukey snapshots, pair records, twiddle-index, and invariants are captured at write-time above.
     if (invariant.enabled()) {
       // Nothing to do here because we updated per-write into the buffer; keep for clarity.
     }
@@ -1547,7 +1566,7 @@ inline void fft_apply_axis(const Plan<T>& P, const AxisLayout<T>& layout)
   if (descriptor.execute_axis) {
     descriptor.execute_axis(P, layout, P.kernel_state());
   } else {
-    detail::baseline_execute_axis(P, layout, P.kernel_state());
+    detail::cooleytukey_execute_axis(P, layout, P.kernel_state());
   }
 }
 
@@ -1563,8 +1582,8 @@ template<class T>
 inline void dispatch_fft(Plan<T>& P, KernelKind kind, const AxisLayout<T>& layout)
 {
   switch (kind) {
-    case KernelKind::Baseline:
-      dispatch_fft(P, Plan<T>::baseline_kernel(), layout);
+    case KernelKind::CooleyTukey:
+      dispatch_fft(P, Plan<T>::cooleytukey_kernel(), layout);
       break;
     case KernelKind::Stockham:
       dispatch_fft(P, Plan<T>::stockham_kernel(), layout);
@@ -1645,12 +1664,12 @@ inline void fft_inplace_2d(Eigen::Ref<Eigen::Matrix<std::complex<T>, Eigen::Dyna
 namespace detail {
 
 template<class T>
-std::unique_ptr<KernelContext> baseline_create_state(Plan<T>&) {
+std::unique_ptr<KernelContext> cooleytukey_create_state(Plan<T>&) {
   return nullptr;
 }
 
 template<class T>
-void baseline_destroy_state(Plan<T>&, KernelContext*) {}
+void cooleytukey_destroy_state(Plan<T>&, KernelContext*) {}
 
 template<class T>
 void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, KernelContext* ctx) {
@@ -1658,7 +1677,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
   validate_fft_axis(P, layout);
   auto* state = static_cast<StockhamState<T>*>(ctx);
   if (!state) {
-    baseline_execute_axis(P, layout, nullptr);
+    cooleytukey_execute_axis(P, layout, nullptr);
     return;
   }
 
@@ -1666,28 +1685,8 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
   const int stages = P.lgN;
   const detail::LayoutMetadataWriter<T> layout_writer(layout, static_cast<std::size_t>(N));
   if (layout_writer.enabled()) {
-    std::vector<int> current_map(N);
-    std::vector<int> next_map(N);
-    for (int i = 0; i < N; ++i) current_map[i] = i;
-    for (int stage = 0; stage < stages; ++stage) {
-      
-      const int m = 1 << stage;
-      const int segments = N >> (stage + 1);  // N / (2 * m)
-      const int halfN = N >> 1;
-      for (int j = 0; j < m; ++j) {
-        for (int g = 0; g < segments; ++g) {
-          const int idx0 = (2 * j) * segments + g;
-          const int idx1 = idx0 + segments;
-          const int out0 = j * segments + g;
-          const int out1 = out0 + halfN;
-          next_map[out0] = current_map[idx0];
-          next_map[out1] = current_map[idx1];
-        }
-      }
-      current_map.swap(next_map);
-    }
     for (int pos = 0; pos < N; ++pos) {
-      layout_writer.set(static_cast<std::size_t>(pos), current_map[pos]);
+      layout_writer.set(static_cast<std::size_t>(pos), pos);
     }
   }
   const detail::StageSnapshotWriter<T> snap(layout, static_cast<std::size_t>(N), stages);
@@ -1741,14 +1740,14 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
   state->ensure_lane_capacity(workspace_lanes);
 
   const int stockham_capacity = std::max(1, state->arena.stockham_lane_capacity);
-  const int baseline_capacity = std::max(1, state->arena.baseline_lane_capacity);
+  const int cooleytukey_capacity = std::max(1, state->arena.baseline_lane_capacity);
   const int lane_capacity = stockham_capacity;
-  const int lane_cols = std::max(1, std::min({desired_lanes, workspace_lanes, lane_capacity, baseline_capacity}));
+  const int lane_cols = std::max(1, std::min({desired_lanes, workspace_lanes, lane_capacity, cooleytukey_capacity}));
 #if EIGFFT_TRACE_STOCKHAM
   std::cout << "[stockham] lanes: requested=" << requested_lanes
             << " packet_cols=" << P.packet_cols
             << " lane_cols(final)=" << lane_cols
-            << " capacity(stockham/baseline)=" << stockham_capacity << "/" << baseline_capacity
+            << " capacity(stockham/cooleytukey)=" << stockham_capacity << "/" << cooleytukey_capacity
             << std::endl;
 #endif
   const Eigen::Index axis_stride = layout.axis_stride;
@@ -2019,15 +2018,15 @@ void external_destroy_state(Plan<T>&, KernelContext*) {}
 } // namespace detail
 
 template<class T>
-const typename Plan<T>::KernelDescriptor& Plan<T>::baseline_kernel() {
+const typename Plan<T>::KernelDescriptor& Plan<T>::cooleytukey_kernel() {
   static const KernelDescriptor desc{
-      KernelKind::Baseline,
-      "baseline-cooleytukey",
+      KernelKind::CooleyTukey,
+      "cooleytukey",
       KernelAccuracy::Default,
       true,
-      detail::baseline_create_state<T>,
-      detail::baseline_execute_axis<T>,
-      detail::baseline_destroy_state<T>
+      detail::cooleytukey_create_state<T>,
+      detail::cooleytukey_execute_axis<T>,
+      detail::cooleytukey_destroy_state<T>
   };
   return desc;
 }
@@ -2063,7 +2062,7 @@ const typename Plan<T>::KernelDescriptor& Plan<T>::external_kernel() {
 template<class T>
 const std::array<const typename Plan<T>::KernelDescriptor*, 3>& Plan<T>::builtin_kernels() {
   static const std::array<const KernelDescriptor*, 3> list{
-      &baseline_kernel(), &stockham_kernel(),
+      &cooleytukey_kernel(), &stockham_kernel(),
       detail::kExternalKernelAvailable ? &external_kernel() : nullptr};
   return list;
 }
