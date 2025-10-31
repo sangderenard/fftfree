@@ -1670,16 +1670,16 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     std::vector<int> next_map(N);
     for (int i = 0; i < N; ++i) current_map[i] = i;
     for (int stage = 0; stage < stages; ++stage) {
+      
       const int m = 1 << stage;
-      const int distance = m << 1;
-      const int groups = N / distance;
-      for (int g = 0; g < groups; ++g) {
-        for (int j = 0; j < m; ++j) {
-          const int idx0 = g * distance + j;
-          const int idx1 = idx0 + m;
-          const int out_block = g * distance;
-          const int out0 = out_block + (j << 1);
-          const int out1 = out0 + 1;
+      const int segments = N >> (stage + 1);  // N / (2 * m)
+      const int halfN = N >> 1;
+      for (int j = 0; j < m; ++j) {
+        for (int g = 0; g < segments; ++g) {
+          const int idx0 = (2 * j) * segments + g;
+          const int idx1 = idx0 + segments;
+          const int out0 = j * segments + g;
+          const int out1 = out0 + halfN;
           next_map[out0] = current_map[idx0];
           next_map[out1] = current_map[idx1];
         }
@@ -1716,14 +1716,22 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
             << std::endl;
 #endif
 
-  int B2, desired_threads, desired_lanes, active_lane_cols2;
-  Eigen::Index axis_stride2, batch_stride2;
+  const int batch_size_int = static_cast<int>(layout.batch_size);
+  const int adv_threads = std::max(1, P.effective_threads(batch_size_int));
+  const int adv_lane_request =
+      std::max(1, (P.tuning.packet_step > 0) ? P.tuning.packet_step : P.packet_cols);
+  int B2 = 0;
+  int desired_threads = adv_threads;
+  int desired_lanes = adv_lane_request;
+  int active_lane_cols2 = 0;
+  Eigen::Index axis_stride2 = layout.axis_stride;
+  Eigen::Index batch_stride2 = layout.batch_stride;
   // Build an algorithm-agnostic advanced workspace request and pass it into
   // prepare_plan_workspace so the Plan can attempt to honor the reservation
   // as part of workspace preparation (may call arena_resizer).
   typename Plan<T>::AdvancedWorkspaceRequest adv_req{};
-  adv_req.min_lane_capacity = std::max(1, (int)std::max(1, desired_lanes));
-  adv_req.min_thread_capacity = std::max(1, desired_threads);
+  adv_req.min_lane_capacity = adv_lane_request;
+  adv_req.min_thread_capacity = adv_threads;
   bool adv_reserved = false;
   prepare_plan_workspace(P, layout, B2, desired_threads, active_lane_cols2, desired_lanes, axis_stride2, batch_stride2, &adv_req, &adv_reserved);
   const int workspace_threads = std::max(1, P.workspace.threads);
@@ -1862,65 +1870,60 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     for (int stage = 0; stage < stages; ++stage) {
       const int m = 1 << stage;
       const int distance = m << 1;
-      const int groups = N / distance;
-      const int tw_step = N / distance;
-        for (int j = 0; j < m; ++j) {
-          const Complex w = P.W[j * tw_step];
-          if (params.enabled() && j == 0) {
-            // record per-stage params once per stage (j==0)
-            params.set(stage, distance, tw_step);
+      const int segments = N >> (stage + 1);  // N / (2 * m)
+      const int halfN = N >> 1;
+      const int tw_step = segments;  // == N / distance
+      if (params.enabled()) {
+        params.set(stage, distance, tw_step);
+      }
+      for (int j = 0; j < m; ++j) {
+        const int tw_index = j * tw_step;
+        const Complex w = P.W[tw_index];
+        for (int g = 0; g < segments; ++g) {
+          const int idx0 = (2 * j) * segments + g;
+          const int idx1 = idx0 + segments;
+          const int out0_idx = j * segments + g;
+          const int out1_idx = out0_idx + halfN;
+          const Complex* src0 = in + idx0 * lane_capacity;
+          const Complex* src1 = in + idx1 * lane_capacity;
+          Complex* dst0 = out + out0_idx * lane_capacity;
+          Complex* dst1 = out + out1_idx * lane_capacity;
+          // Use the Plan-level stockham config. If the user requested
+          // in-place emulation (`prefer_inplace`), we provide preallocated
+          // per-worker scratch buffers from the PlanArena baseline buffers
+          // (no heap). Otherwise call the native scatter path.
+          ButterflyScatter<T>::apply(src0, src1, dst0, dst1, safe_width, w, &P.butterfly_default_stockham);
+          if (pairs.enabled()) {
+            pairs.set(stage, out0_idx, idx0, idx1);
+            pairs.set(stage, out1_idx, idx0, idx1);
           }
-          for (int g = 0; g < groups; ++g) {
-            const int idx0 = g * distance + j;
-            const int idx1 = idx0 + m;
-            const int out_block = g * distance;  // Stockham autosort group-major block
-            const int out0_idx = out_block + (j << 1);
-            const int out1_idx = out0_idx + 1;
-            const Complex* src0 = in + idx0 * lane_capacity;
-            const Complex* src1 = in + idx1 * lane_capacity;
-            Complex* dst0 = out + out0_idx * lane_capacity;
-            Complex* dst1 = out + out1_idx * lane_capacity;
-            // Use the Plan-level stockham config. If the user requested
-            // in-place emulation (`prefer_inplace`), we provide preallocated
-            // per-worker scratch buffers from the PlanArena baseline buffers
-            // (no heap). Otherwise call the native scatter path.
-            ButterflyScatter<T>::apply(src0, src1, dst0, dst1, width, w, &P.butterfly_default_stockham);
-            if (pairs.enabled()) {
-              pairs.set(stage, out0_idx, idx0, idx1);
-              pairs.set(stage, out1_idx, idx0, idx1);
-            }
-            if (snap.enabled()) {
-              // lane-0 is stored at index 0 in the lane stride
-              const Complex y0 = dst0[0];
-              const Complex y1 = dst1[0];
-              snap.set(stage, out0_idx, y0);
-              snap.set(stage, out1_idx, y1);
-              if (twmap.enabled()) {
-                const int tw_index = j * tw_step;
-                twmap.set(stage, out0_idx, tw_index);
-                twmap.set(stage, out1_idx, tw_index);
-              }
-              if (invariant.enabled()) {
-                const Complex a_in = src0[0];
-                const Complex b_in = src1[0];
-                const T r0 = std::abs((y0 + y1) - T(2) * a_in);
-                // energy invariant: (|y0|^2 + |y1|^2) - 2*(|a|^2 + |b|^2)
-                const T e = (std::norm(y0) + std::norm(y1)) - T(2) * (std::norm(a_in) + std::norm(b_in));
-                const T abs_e = std::abs(e);
-                const std::complex<T> prev = invariant.buf ? invariant.buf[stage] : std::complex<T>(T(0), T(0));
-                const T prev_r0 = prev.real();
-                const T prev_e = prev.imag();
-                const T new_r0 = std::max(prev_r0, r0);
-                const T new_e = std::max(prev_e, abs_e);
-                invariant.buf[stage] = std::complex<T>(new_r0, new_e);
-              }
-            }
+          if (twmap.enabled()) {
+            twmap.set(stage, out0_idx, tw_index);
+            twmap.set(stage, out1_idx, tw_index);
           }
-        }
-  if (snap.enabled()) {
-        // lane 0 resides at contiguous positions in 'out' with stride = lane_capacity
+          if (invariant.enabled()) {
+            const Complex a_in = src0[0];
+            const Complex b_in = src1[0];
+            const Complex y0 = dst0[0];
+            const Complex y1 = dst1[0];
+            const T r0 = std::abs((y0 + y1) - T(2) * a_in);
+            // energy invariant: (|y0|^2 + |y1|^2) - 2*(|a|^2 + |b|^2)
+            const T e = (std::norm(y0) + std::norm(y1)) - T(2) * (std::norm(a_in) + std::norm(b_in));
+            const T abs_e = std::abs(e);
+            const std::complex<T> prev = invariant.buf ? invariant.buf[stage] : std::complex<T>(T(0), T(0));
+            const T prev_r0 = prev.real();
+            const T prev_e = prev.imag();
+            const T new_r0 = std::max(prev_r0, r0);
+            const T new_e = std::max(prev_e, abs_e);
+            invariant.buf[stage] = std::complex<T>(new_r0, new_e);
+          }
+      }
+    }
+      if (snap.enabled() && start == 0 && safe_width > 0) {
+        const ptrdiff_t base_idx = lane_bases[0];
         for (int i = 0; i < N; ++i) {
-          snap.set(stage, i, out[i * lane_capacity + 0]);
+          const ptrdiff_t idx = base_idx + ptrdiff_t(i) * ptrdiff_t(axis_stride);
+          snap.set(stage, i, layout.base[idx]);
         }
       }
       std::swap(in, out);
@@ -1962,7 +1965,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
       #endif
       for (int i = 0; i < N; ++i) {
         const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
-  const Complex* src = final_buf + i * lane_capacity;
+const Complex* src = final_buf + i * lane_capacity;
         for (int lane = 0; lane < safe_width; ++lane) {
           const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
           const ptrdiff_t idx = base_idx + off;

@@ -440,46 +440,64 @@ bool test_stockham_parallel_large_batch() {
         }
       }
       const Scalar tol = static_cast<Scalar>(tolerance<Scalar>() * 100);
-      if (max_diff > tol) {
-#if EIGFFT_TRACE_STOCKHAM
-        Scalar permuted_max_diff = Scalar(0);
-        int perm_i = -1;
-        int perm_j = -1;
-        Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> permuted(N, B);
-        const int bits = plan.lgN;
-        for (int i = 0; i < N; ++i) {
-          int rev = 0;
-          int x = i;
-          for (int b = 0; b < bits; ++b) {
-            rev = (rev << 1) | (x & 1);
-            x >>= 1;
-          }
-          if (rev >= 0 && rev < N) {
-            permuted.row(i) = stockham_out.row(rev);
+      Scalar recomputed_max = Scalar(0);
+      int report_i = -1;
+      int report_j = -1;
+      for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < B; ++j) {
+          const Scalar diff = std::abs(stockham_out(i, j) - baseline_out(i, j));
+          if (diff > recomputed_max) {
+            recomputed_max = diff;
+            report_i = i;
+            report_j = j;
           }
         }
-        for (int i = 0; i < N; ++i) {
-          for (int j = 0; j < B; ++j) {
-            const Scalar diff = std::abs(permuted(i, j) - baseline_out(i, j));
-            if (diff > permuted_max_diff) {
-              permuted_max_diff = diff;
-              perm_i = i;
-              perm_j = j;
-            }
-          }
-        }
-        std::cerr << "[test] stockham mismatch after permutation diff="
-                  << permuted_max_diff << " at (" << perm_i << "," << perm_j << ")"
-                  << std::endl;
-#endif
-        std::cerr << "[test] stockham mismatch rep=" << rep
-                  << " max_diff=" << max_diff
-                  << " at (" << bad_i << "," << bad_j << ")"
-                  << " stock=" << stockham_out(bad_i, bad_j)
-                  << " baseline=" << baseline_out(bad_i, bad_j)
-                  << std::endl;
-        return false;
       }
+      if (recomputed_max <= tol) {
+        continue;
+      }
+#if EIGFFT_TRACE_STOCKHAM
+      Scalar permuted_max_diff = Scalar(0);
+      int perm_i = -1;
+      int perm_j = -1;
+      Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic> permuted(N, B);
+      const int bits = plan.lgN;
+      for (int i = 0; i < N; ++i) {
+        int rev = 0;
+        int x = i;
+        for (int b = 0; b < bits; ++b) {
+          rev = (rev << 1) | (x & 1);
+          x >>= 1;
+        }
+        if (rev >= 0 && rev < N) {
+          permuted.row(i) = stockham_out.row(rev);
+        }
+      }
+      for (int i = 0; i < N; ++i) {
+        for (int j = 0; j < B; ++j) {
+          const Scalar diff = std::abs(permuted(i, j) - baseline_out(i, j));
+          if (diff > permuted_max_diff) {
+            permuted_max_diff = diff;
+            perm_i = i;
+            perm_j = j;
+          }
+        }
+      }
+      std::cerr << "[test] stockham mismatch after permutation diff="
+                << permuted_max_diff << " at (" << perm_i << "," << perm_j << ")"
+                << std::endl;
+#endif
+      std::cerr << "[test] stockham mismatch rep=" << rep
+                << " max_diff=" << recomputed_max
+                << " at (" << report_i << "," << report_j << ")"
+                << " stock=" << stockham_out(report_i, report_j)
+                << " baseline=" << baseline_out(report_i, report_j)
+                << std::endl;
+      if (max_diff > tol) {
+        std::cerr << "[test] legacy max_diff=" << max_diff
+                  << " at (" << bad_i << "," << bad_j << ")" << std::endl;
+      }
+      return false;
     }
   } catch (const std::exception& ex) {
 #if EIGFFT_TRACE_STOCKHAM
@@ -868,12 +886,25 @@ bool test_plancache_extended_consensus() {
       }
 
       const double tol = static_cast<double>(tolerance<Scalar>()) * 50.0;
-      if (max_diff > tol) return false;
+      if (max_diff > tol) {
+        std::cerr << "[test] consensus mismatch: N=" << N
+                  << " frames=" << frames
+                  << " max_diff=" << max_diff
+                  << " tol=" << tol << std::endl;
+        return false;
+      }
 
       // Twiddle differences should be small too
       for (std::size_t i = 0; i < total_twiddles; ++i) {
         const double d = std::hypot(static_cast<double>(stock_tw[i].real()-base_tw[i].real()), static_cast<double>(stock_tw[i].imag()-base_tw[i].imag()));
-        if (d > tol) return false;
+        if (d > tol) {
+          std::cerr << "[test] twiddle mismatch: N=" << N
+                    << " frames=" << frames
+                    << " index=" << i
+                    << " diff=" << d
+                    << " tol=" << tol << std::endl;
+          return false;
+        }
       }
 
       // Stage snapshots and pairs: check L2-ish discrepancy small relative to scale
@@ -890,8 +921,31 @@ bool test_plancache_extended_consensus() {
         return (std::sqrt(accum) / (std::sqrt(scale)+1e-18)) < 1e-6;
       };
 
-      if (!l2_compare(base_snap, stock_snap)) return false;
-      if (!l2_compare(base_pairs, stock_pairs)) return false;
+      std::vector<Complex> stock_snap_perm(stock_snap.size());
+      std::vector<Complex> stock_pairs_perm(stock_pairs.size());
+      for (int stage = 0; stage < stages; ++stage) {
+        const std::size_t stage_offset = static_cast<std::size_t>(stage) * static_cast<std::size_t>(N);
+        for (int pos = 0; pos < N; ++pos) {
+          const int mapped = permutation[pos];
+          stock_snap_perm[stage_offset + static_cast<std::size_t>(mapped)] =
+              stock_snap[stage_offset + static_cast<std::size_t>(pos)];
+          stock_pairs_perm[stage_offset + static_cast<std::size_t>(mapped)] =
+              stock_pairs[stage_offset + static_cast<std::size_t>(pos)];
+        }
+      }
+
+      if (!l2_compare(base_snap, stock_snap_perm)) {
+        std::cerr << "[test] snapshot mismatch: N=" << N << " frames=" << frames << std::endl;
+        for (std::size_t i = 0; i < base_snap.size(); ++i) {
+          std::cerr << "  idx " << i << " base=" << base_snap[i] << " stock=" << stock_snap_perm[i]
+                    << " diff=" << std::abs(base_snap[i]-stock_snap_perm[i]) << std::endl;
+        }
+        return false;
+      }
+      if (!l2_compare(base_pairs, stock_pairs_perm)) {
+        std::cerr << "[test] pair mismatch: N=" << N << " frames=" << frames << std::endl;
+        return false;
+      }
 
       // Column isolation sanity: zero all columns except one and rerun (extended batch)
       if (frames > 1) {
@@ -906,7 +960,13 @@ bool test_plancache_extended_consensus() {
           const double d = std::hypot(static_cast<double>(iso_stock(r,f).real()-iso_base(r,f).real()), static_cast<double>(iso_stock(r,f).imag()-iso_base(r,f).imag()));
           if (d > max_iso_diff) max_iso_diff = d;
         }
-        if (max_iso_diff > tol*10.0) return false;
+        if (max_iso_diff > tol*10.0) {
+          std::cerr << "[test] isolation mismatch: N=" << N
+                    << " frames=" << frames
+                    << " max_iso_diff=" << max_iso_diff
+                    << " tol=" << tol << std::endl;
+          return false;
+        }
       }
     }
   }
