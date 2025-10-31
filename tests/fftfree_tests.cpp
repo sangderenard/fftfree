@@ -1,14 +1,17 @@
 #include "../eigen_fft.hpp"
 #include "../plan_support.hpp"
+#include "../fft_runtime_api.hpp"
 
 #include <Eigen/Core>
 #include <unsupported/Eigen/FFT>
 
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <complex>
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <random>
 #include <string>
 #include <type_traits>
@@ -17,6 +20,7 @@
 #include <iomanip>
 #include <map>
 #include <tuple>
+#include <sstream>
 
 namespace {
 
@@ -403,6 +407,261 @@ bool test_plan_cache_reuse_after_release() {
   }
   auto token_again = cache.get_plan(1024, /*inverse=*/false, cfg);
   return first_ptr == &token_again.plan();
+}
+
+template <typename Scalar>
+bool test_prepared_transform_modes() {
+  using Complex = std::complex<Scalar>;
+  using Matrix = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
+  const int N = 64;
+  const int B = 4;
+
+  std::mt19937 rng(1337);
+  std::normal_distribution<double> dist(0.0, 1.0);
+  Matrix base(N, B);
+  for (int r = 0; r < N; ++r) {
+    for (int c = 0; c < B; ++c) {
+      const Scalar re = static_cast<Scalar>(dist(rng));
+      const Scalar im = static_cast<Scalar>(dist(rng));
+      base(r, c) = Complex(re, im);
+    }
+  }
+
+  const Matrix reference = eigen_fft_forward<Scalar>(base);
+  const double tol = static_cast<double>(tolerance<Scalar>()) * 10.0;
+
+  auto max_diff = [&](const Matrix& a, const Matrix& b) {
+    double max_err = 0.0;
+    for (int r = 0; r < a.rows(); ++r) {
+      for (int c = 0; c < a.cols(); ++c) {
+        const Complex diff = a(r, c) - b(r, c);
+        const double mag = std::hypot(static_cast<double>(diff.real()),
+                                      static_cast<double>(diff.imag()));
+        if (mag > max_err) {
+          max_err = mag;
+        }
+      }
+    }
+    return max_err;
+  };
+
+  eigfft::TransformSettings<Scalar> settings;
+  settings.fft_size = N;
+  settings.inverse = false;
+  settings.runtime = default_runtime_config<Scalar>();
+  settings.kernel_hint = eigfft::KernelKind::CooleyTukey;
+  settings.pad_to_power_of_two = true;
+
+  // Out-of-place execution should leave input untouched and return the spectrum.
+  settings.placement = eigfft::TransformPlacement::OutOfPlace;
+  eigfft::PreparedTransform<Scalar> out_session(settings);
+  Matrix out_input = base;
+  auto out_result = out_session.run(out_input);
+  if (!out_result.has_value()) {
+    return false;
+  }
+  if (max_diff(out_input, base) > tol) {
+    return false;
+  }
+  if (max_diff(out_result.value(), reference) > tol) {
+    return false;
+  }
+
+  // In-place execution should mutate the buffer and return no separate result.
+  settings.placement = eigfft::TransformPlacement::InPlace;
+  eigfft::PreparedTransform<Scalar> in_session(settings);
+  Matrix in_input = base;
+  auto in_result = in_session.run(in_input);
+  if (in_result.has_value()) {
+    return false;
+  }
+  if (max_diff(in_input, reference) > tol) {
+    return false;
+  }
+
+  // Emulated in-place should behave like in-place while internally using a scratch copy.
+  settings.placement = eigfft::TransformPlacement::EmulatedInPlace;
+  eigfft::PreparedTransform<Scalar> emu_session(settings);
+  Matrix emu_input = base;
+  auto emu_result = emu_session.run(emu_input);
+  if (emu_result.has_value()) {
+    return false;
+  }
+  if (max_diff(emu_input, reference) > tol) {
+    return false;
+  }
+
+  return true;
+}
+
+bool test_sample_wav_metadata() {
+  constexpr std::uint16_t channels = 1;
+  constexpr std::uint16_t bits_per_sample = 16;
+  constexpr std::uint32_t sample_rate = 22050;
+  constexpr std::size_t sample_count = 20480;
+  const std::uint16_t bytes_per_sample = bits_per_sample / 8;
+  const std::uint16_t block_align = static_cast<std::uint16_t>(channels * bytes_per_sample);
+  const std::uint32_t byte_rate = sample_rate * static_cast<std::uint32_t>(block_align);
+  const std::uint32_t data_size =
+      static_cast<std::uint32_t>(sample_count * static_cast<std::size_t>(block_align));
+
+  std::string wav_data;
+  wav_data.reserve(44 + static_cast<std::size_t>(data_size));
+  auto append_u32 = [&](std::uint32_t value) {
+    wav_data.push_back(static_cast<char>(value & 0xFFu));
+    wav_data.push_back(static_cast<char>((value >> 8) & 0xFFu));
+    wav_data.push_back(static_cast<char>((value >> 16) & 0xFFu));
+    wav_data.push_back(static_cast<char>((value >> 24) & 0xFFu));
+  };
+  auto append_u16 = [&](std::uint16_t value) {
+    wav_data.push_back(static_cast<char>(value & 0xFFu));
+    wav_data.push_back(static_cast<char>((value >> 8) & 0xFFu));
+  };
+
+  wav_data.append("RIFF", 4);
+  append_u32(36u + data_size);
+  wav_data.append("WAVE", 4);
+  wav_data.append("fmt ", 4);
+  append_u32(16u);
+  append_u16(1u); // PCM
+  append_u16(channels);
+  append_u32(sample_rate);
+  append_u32(byte_rate);
+  append_u16(block_align);
+  append_u16(bits_per_sample);
+  wav_data.append("data", 4);
+  append_u32(data_size);
+
+  constexpr double pi = 3.141592653589793238462643383279502884L;
+  const double base_freq = 440.0;
+  for (std::size_t i = 0; i < sample_count; ++i) {
+    const double t = static_cast<double>(i) / static_cast<double>(sample_rate);
+    const double env = 0.5 *
+                       (1.0 - std::cos(2.0 * pi * t /
+                                       std::max<double>(static_cast<double>(sample_count - 1), 1.0)));
+    double sample = 0.0;
+    sample += 0.6 * std::sin(2.0 * pi * base_freq * t);
+    sample += 0.3 * std::sin(2.0 * pi * (base_freq * 1.5) * t + 0.25 * pi);
+    sample += 0.1 * std::sin(2.0 * pi * (base_freq * 2.0) * t + 0.5 * pi);
+    sample *= env;
+    const auto quantized = static_cast<std::int32_t>(std::lround(sample * 32767.0));
+    const std::int32_t clamped = std::clamp(quantized, -32768, 32767);
+    append_u16(static_cast<std::uint16_t>(static_cast<std::uint32_t>(clamped) & 0xFFFFu));
+  }
+
+  std::istringstream file(std::string(wav_data.data(), wav_data.size()), std::ios::binary);
+
+  auto read_u32 = [&](std::uint32_t& value) {
+    unsigned char bytes[4];
+    if (!file.read(reinterpret_cast<char*>(bytes), 4)) {
+      return false;
+    }
+    value = static_cast<std::uint32_t>(bytes[0] | (bytes[1] << 8) |
+                                       (bytes[2] << 16) | (bytes[3] << 24));
+    return true;
+  };
+  auto read_u16 = [&](std::uint16_t& value) {
+    unsigned char bytes[2];
+    if (!file.read(reinterpret_cast<char*>(bytes), 2)) {
+      return false;
+    }
+    value = static_cast<std::uint16_t>(bytes[0] | (bytes[1] << 8));
+    return true;
+  };
+
+  char riff[4];
+  if (!file.read(riff, 4) || std::memcmp(riff, "RIFF", 4) != 0) {
+    return false;
+  }
+  std::uint32_t riff_size = 0;
+  if (!read_u32(riff_size)) {
+    return false;
+  }
+  (void)riff_size;
+  char wave[4];
+  if (!file.read(wave, 4) || std::memcmp(wave, "WAVE", 4) != 0) {
+    return false;
+  }
+
+  char fmt_id[4];
+  if (!file.read(fmt_id, 4) || std::memcmp(fmt_id, "fmt ", 4) != 0) {
+    return false;
+  }
+  std::uint32_t fmt_size = 0;
+  if (!read_u32(fmt_size)) {
+    return false;
+  }
+  if (fmt_size < 16) {
+    return false;
+  }
+
+  std::uint16_t audio_format = 0;
+  std::uint16_t parsed_channels = 0;
+  std::uint32_t parsed_sample_rate = 0;
+  std::uint32_t parsed_byte_rate = 0;
+  std::uint16_t parsed_block_align = 0;
+  std::uint16_t parsed_bits_per_sample = 0;
+  if (!read_u16(audio_format) || !read_u16(parsed_channels) ||
+      !read_u32(parsed_sample_rate) || !read_u32(parsed_byte_rate) ||
+      !read_u16(parsed_block_align) || !read_u16(parsed_bits_per_sample)) {
+    return false;
+  }
+
+  const std::size_t fmt_remaining = static_cast<std::size_t>(fmt_size) > 16
+                                        ? static_cast<std::size_t>(fmt_size) - 16
+                                        : 0;
+  if (fmt_remaining > 0) {
+    file.seekg(static_cast<std::streamoff>(fmt_remaining), std::ios::cur);
+  }
+
+  std::uint32_t parsed_data_size = 0;
+  while (true) {
+    char chunk_id[4];
+    if (!file.read(chunk_id, 4)) {
+      return false;
+    }
+    std::uint32_t chunk_size = 0;
+    if (!read_u32(chunk_size)) {
+      return false;
+    }
+    if (std::memcmp(chunk_id, "data", 4) == 0) {
+      parsed_data_size = chunk_size;
+      break;
+    }
+    file.seekg(static_cast<std::streamoff>(chunk_size), std::ios::cur);
+    if ((chunk_size & 1u) != 0u) {
+      file.seekg(1, std::ios::cur);
+    }
+  }
+
+  if (audio_format != 1 || parsed_channels != channels ||
+      parsed_bits_per_sample != bits_per_sample) {
+    return false;
+  }
+  if (parsed_sample_rate != sample_rate) {
+    return false;
+  }
+  if (parsed_block_align != block_align) {
+    return false;
+  }
+
+  const std::size_t parsed_sample_count = static_cast<std::size_t>(parsed_data_size) /
+                                          static_cast<std::size_t>(parsed_block_align);
+  if (parsed_sample_count < 20u * 1024u) {
+    return false;
+  }
+  if (parsed_sample_count != sample_count) {
+    return false;
+  }
+
+  const std::size_t expected_byte_rate =
+      static_cast<std::size_t>(parsed_sample_rate) *
+      static_cast<std::size_t>(parsed_block_align);
+  if (parsed_byte_rate != expected_byte_rate) {
+    return false;
+  }
+
+  return true;
 }
 
 #ifndef EIGFFT_ALLOW_SEQUENTIAL
@@ -1110,6 +1369,8 @@ void enqueue_precision_tests(std::vector<std::pair<std::string, bool>>& results)
                        test_plan_cache_unique_token_instances<Scalar>());
   results.emplace_back("plan_cache_reuse_after_release<" + tag + ">",
                        test_plan_cache_reuse_after_release<Scalar>());
+  results.emplace_back("prepared_transform_modes<" + tag + ">",
+                       test_prepared_transform_modes<Scalar>());
 #ifndef EIGFFT_ALLOW_SEQUENTIAL
   results.emplace_back("sequential_path_rejected<" + tag + ">",
                        test_sequential_path_rejected<Scalar>());
@@ -1121,6 +1382,8 @@ void enqueue_precision_tests(std::vector<std::pair<std::string, bool>>& results)
 int main() {
   std::vector<std::pair<std::string, bool>> results;
   results.reserve(20);
+
+  results.emplace_back("sample_wav_metadata", test_sample_wav_metadata());
 
   enqueue_precision_tests<double>(results);
   enqueue_precision_tests<float>(results);

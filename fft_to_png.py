@@ -13,9 +13,25 @@ from scipy.io import wavfile
 ffi = FFI()
 ffi.cdef(
     """
-void fft_pcm_to_channels(const float* in_pcm, float* out_real, float* out_imag, float* out_mag, size_t n, int threads);
-void* fft_init(size_t n, int threads, int lanes, int inverse);
-int fft_execute(void* handle, const float* in_pcm, float* out_real, float* out_imag, float* out_mag, size_t n);
+void fft_pcm_to_channels(const float* in_pcm,
+                         float* out_real,
+                         float* out_imag,
+                         float* out_mag,
+                         size_t n,
+                         int threads);
+void* fft_init(size_t n,
+               int threads,
+               int lanes,
+               int inverse,
+               int kernel,
+               int pad_mode);
+int fft_execute(void* handle,
+                const float* in_pcm,
+                float* out_real,
+                float* out_imag,
+                float* out_mag,
+                size_t n);
+size_t fft_ctx_size(void* handle);
 void fft_free(void* handle);
 """
 )
@@ -83,7 +99,7 @@ def _discover_library(explicit: Optional[str]) -> Path:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate an FFT RGB image from WAV audio")
     parser.add_argument("input", help="Path to a mono or stereo WAV file")
-    parser.add_argument("output", help="Destination PNG file")
+    parser.add_argument("output", help="Destination PNG file (ignored when --no-image is used)")
     parser.add_argument(
         "--lib",
         help="Explicit path to the fft_cffi shared library (overrides FFTFREE_CFFI_LIB)",
@@ -101,6 +117,16 @@ def _parse_args() -> argparse.Namespace:
         choices=["auto", "always", "never"],
         default="auto",
         help="Padding policy: auto (required by kernel), always, or never",
+    )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Print descriptive statistics for the complex FFT output",
+    )
+    parser.add_argument(
+        "--no-image",
+        action="store_true",
+        help="Skip writing the FFT visualization PNG",
     )
     return parser.parse_args()
 
@@ -186,20 +212,39 @@ def main() -> None:
             arr *= 255
             return arr.astype(np.uint8)
 
-        real_img = norm(out_real)
-        imag_img = norm(out_imag)
-        mag_img = norm(out_mag)
+        if args.stats:
+            def describe(name: str, arr: np.ndarray) -> None:
+                finite = arr[np.isfinite(arr)]
+                if finite.size == 0:
+                    print(f"{name}: no finite values to summarize")
+                    return
+                print(
+                    f"{name}: min={finite.min():.6g} max={finite.max():.6g} "
+                    f"mean={finite.mean():.6g} std={finite.std(ddof=0):.6g}"
+                )
 
-        # Stack into RGB image
-        length = len(real_img)
-        img = np.stack([real_img, imag_img, mag_img], axis=1)
-        side = int(np.ceil(np.sqrt(length)))
-        padded = np.zeros((side*side, 3), dtype=np.uint8)
-        padded[:length] = img
-        img2d = padded.reshape((side, side, 3))
+            print("FFT output statistics (real/imaginary/magnitude):")
+            describe("real", out_real)
+            describe("imag", out_imag)
+            describe("mag", out_mag)
 
-        Image.fromarray(img2d, "RGB").save(args.output)
-        print(f"Saved FFT image to {args.output} using {lib_path}")
+        if not args.no_image:
+            real_img = norm(out_real)
+            imag_img = norm(out_imag)
+            mag_img = norm(out_mag)
+
+            # Stack into RGB image
+            length = len(real_img)
+            img = np.stack([real_img, imag_img, mag_img], axis=1)
+            side = int(np.ceil(np.sqrt(length)))
+            padded = np.zeros((side * side, 3), dtype=np.uint8)
+            padded[:length] = img
+            img2d = padded.reshape((side, side, 3))
+
+            Image.fromarray(img2d, "RGB").save(args.output)
+            print(f"Saved FFT image to {args.output} using {lib_path}")
+        else:
+            print("Image generation disabled (--no-image)")
     except Exception as e:
         print("ERROR:", e)
         traceback.print_exc()
