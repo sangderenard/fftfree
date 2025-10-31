@@ -89,6 +89,13 @@ def main() -> None:
 
     lib_path = _discover_library(args.lib)
     lib = ffi.dlopen(str(lib_path))
+    try:
+        fft_fn = lib.fft_pcm_to_channels
+    except AttributeError as exc:  # pragma: no cover - defensive path for misbuilt libs
+        raise AttributeError(
+            "Shared library is missing 'fft_pcm_to_channels'. "
+            "Ensure fft_cffi was built and exported correctly."
+        ) from exc
 
     # Read audio file
     _sample_rate, data = wavfile.read(args.input)
@@ -103,7 +110,7 @@ def main() -> None:
     out_mag = np.zeros(n, dtype=np.float32)
 
     # Call C++ FFT via cffi
-    lib.fft_pcm_to_channels(
+    fft_fn(
         ffi.cast("float *", data.ctypes.data),
         ffi.cast("float *", out_real.ctypes.data),
         ffi.cast("float *", out_imag.ctypes.data),
