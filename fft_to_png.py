@@ -201,16 +201,26 @@ def main() -> None:
         finally:
             lib.fft_free(ctx)
 
-        # Normalize to 0-255
-        def norm(arr):
-            arr = arr.astype(np.float32)
-            arr -= arr.min()
-            max_val = arr.max()
-            if max_val == 0:
-                return np.zeros_like(arr, dtype=np.uint8)
-            arr /= (max_val + 1e-8)
-            arr *= 255
-            return arr.astype(np.uint8)
+        # Normalize helpers used by both the PNG writer and stats reporting.
+        def _normalize_for_image(arr: np.ndarray) -> np.ndarray:
+            """Return a float32 array scaled to the 0-255 visualization range."""
+
+            scaled = np.array(arr, dtype=np.float32, copy=True)
+            if scaled.size == 0:
+                return scaled
+
+            min_val = float(np.min(scaled))
+            scaled -= min_val
+            max_val = float(np.max(scaled))
+            if max_val == 0.0:
+                return np.zeros_like(scaled, dtype=np.float32)
+
+            scaled /= (max_val + 1e-8)
+            scaled *= 255.0
+            return scaled
+
+        def norm(arr: np.ndarray) -> np.ndarray:
+            return _normalize_for_image(arr).astype(np.uint8)
 
         if args.stats:
             def describe(name: str, arr: np.ndarray) -> None:
@@ -227,6 +237,16 @@ def main() -> None:
             describe("real", out_real)
             describe("imag", out_imag)
             describe("mag", out_mag)
+
+            print("Normalized FFT channel statistics (0-255 visualization scale):")
+
+            def describe_normalized(name: str, arr: np.ndarray) -> None:
+                normalized = _normalize_for_image(arr)
+                describe(name, normalized)
+
+            describe_normalized("real_norm", out_real)
+            describe_normalized("imag_norm", out_imag)
+            describe_normalized("mag_norm", out_mag)
 
         if not args.no_image:
             real_img = norm(out_real)
