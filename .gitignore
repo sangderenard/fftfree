@@ -1,12 +1,39 @@
-/build/*.*
+# Build directories and configuration artifacts
 /build/
-/build-linux/
-build
-./build
-./build/
-./build/*
-*.exe
+/build-*/
+/build_linux/
+/cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/Testing/
+/CTestTestfile.cmake
+/Makefile
+/*.ninja
+/.ninja_deps
+/.ninja_log
+compile_commands.json
+
+# Compiled objects and binaries
+*.o
 *.obj
-build/Release/fft_example.exe
-build/fft_example.dir/Release/main.obj
-MegaMix.wav
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Generated audio fixtures
+*.wav
+*.WAV
+*.wave
+
+# Miscellaneous build outputs
+*.log
