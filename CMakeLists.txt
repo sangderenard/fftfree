@@ -40,6 +40,7 @@ if (NOT FFTFREE_NATIVE_ARCH_PIN)
 endif()
 option(FFTFREE_OPENMP "Enable OpenMP" ON)
 option(FFTFREE_FAST_MATH "Enable fast-math" ON)
+option(EIGFFT_TIMING "Enable timing instrumentation (compile-time)" OFF)
 
 # Detect the highest SIMD level actually supported by the host CPU when AUTO is
 # requested on MSVC.  Using compiler-flag probes alone is insufficient because
@@ -125,6 +126,12 @@ function(fftfree_apply_target_options target)
   if (FFTFREE_OPENMP)
     target_link_libraries(${target} PRIVATE OpenMP::OpenMP_CXX)
     target_compile_definitions(${target} PRIVATE EIGFFT_USE_OMP=1)
+  endif()
+
+  if (EIGFFT_TIMING)
+    # Propagate compile-time timing flag into targets so the header-guarded
+    # EIGFFT_TIMING macro can be enabled from CMake with -DEIGFFT_TIMING=ON
+    target_compile_definitions(${target} PRIVATE EIGFFT_TIMING=1)
   endif()
 
   if (MSVC)

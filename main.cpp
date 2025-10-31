@@ -328,6 +328,11 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
 
   std::cout << std::fixed << std::setprecision(6);
 
+#if EIGFFT_TIMING
+  auto __timing_start = eigfft::detail::timing_internal::timing_snapshot();
+  auto __timing_prev = __timing_start;
+#endif
+
   for (size_t idx = 0; idx < kCases.size(); ++idx) {
     const auto& task = kCases[idx];
     std::mt19937 rng = make_rng(seed_rng() + static_cast<uint64_t>(idx));
@@ -392,6 +397,17 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
           }
           std::cout << std::endl;
         }
+
+#if EIGFFT_TIMING
+        {
+          std::ostringstream __timing_label_ss;
+          __timing_label_ss << "N=" << task.N << " B=" << task.B
+                            << " algo=" << algo.label << " lanes=" << cfg.lanes.label;
+          auto __timing_now = eigfft::detail::timing_internal::timing_snapshot();
+          eigfft::detail::timing_internal::timing_report_delta(__timing_prev, __timing_now, std::cout, __timing_label_ss.str());
+          __timing_prev = __timing_now;
+        }
+#endif
       }
     }
   }
@@ -412,6 +428,14 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
       run_realtime_simulation<Scalar>(seed_rng, rt_opts, runtime_cfg, /*batched=*/true, win, str, algo.kind, algo.label);
     }
   }
+#if EIGFFT_TIMING
+  {
+    auto __timing_end = eigfft::detail::timing_internal::timing_snapshot();
+    eigfft::detail::timing_internal::timing_report_delta(__timing_start, __timing_end, std::cout, std::string("TOTAL"));
+  }
+  eigfft::detail::timing_internal::timing_report(std::cout);
+  eigfft::detail::timing_internal::timing_reset_all();
+#endif
 }
 
 }

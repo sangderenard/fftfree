@@ -6,6 +6,12 @@
 #define EIGFFT_TRACE_STOCKHAM 0
 #endif
 
+#ifndef EIGFFT_TRACE_LAYOUT
+#define EIGFFT_TRACE_LAYOUT 0
+#endif
+
+
+
 // eigen_fft.hpp (header-only)
 #pragma once
 
@@ -24,6 +30,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <string>
 #include <thread>
 #include <vector>
 #include <type_traits>
@@ -117,6 +124,142 @@ inline constexpr bool kExternalKernelAvailable = true;
 #else
 inline constexpr bool kExternalKernelAvailable = false;
 #endif
+
+// Timing instrumentation (header-only, low-overhead when disabled).
+#ifndef EIGFFT_TIMING
+#define EIGFFT_TIMING 0
+#endif
+
+#if EIGFFT_TIMING
+// Lightweight per-thread timing aggregator with RAII timer.
+namespace timing_internal {
+enum class Bin : int {
+  PlanCacheLookup = 0,
+  PlanNew,
+  AlgorithmDispatch,
+  PreButterfly,
+  ButterflyStage,
+  PostButterfly,
+  kCount
+};
+
+struct ThreadTiming {
+  double dur[static_cast<int>(Bin::kCount)];
+  uint64_t cnt[static_cast<int>(Bin::kCount)];
+  ThreadTiming() { for (int i = 0; i < static_cast<int>(Bin::kCount); ++i) { dur[i]=0.0; cnt[i]=0; } }
+};
+
+inline std::mutex& timing_registry_mutex() {
+  static std::mutex m;
+  return m;
+}
+
+inline std::vector<ThreadTiming*>& timing_registry() {
+  static std::vector<ThreadTiming*> v;
+  return v;
+}
+
+inline ThreadTiming& thread_timing() {
+  thread_local ThreadTiming local;
+  thread_local bool registered = false;
+  if (!registered) {
+    std::lock_guard<std::mutex> g(timing_registry_mutex());
+    timing_registry().push_back(&local);
+    registered = true;
+  }
+  return local;
+}
+
+struct ScopedTimer {
+  // Use steady_clock for portability on MSVC (high_resolution_clock
+  // may not be available/aliased the same on all standard library
+  // implementations). Avoid the identifier `clock` which can clash
+  // with platform symbols; use a clearer name.
+  using clock_type = std::chrono::steady_clock;
+  Bin bin;
+  clock_type::time_point start;
+  ScopedTimer(Bin b) : bin(b), start(clock_type::now()) {}
+  ~ScopedTimer() {
+    const auto end = clock_type::now();
+    const double s = std::chrono::duration<double>(end - start).count();
+    ThreadTiming& tt = thread_timing();
+    const int idx = static_cast<int>(bin);
+    tt.dur[idx] += s;
+    ++tt.cnt[idx];
+  }
+};
+
+inline void timing_reset_all() {
+  std::lock_guard<std::mutex> g(timing_registry_mutex());
+  for (ThreadTiming* p : timing_registry()) {
+    for (int i = 0; i < static_cast<int>(Bin::kCount); ++i) { p->dur[i]=0.0; p->cnt[i]=0; }
+  }
+}
+
+inline void timing_report(std::ostream& os) {
+  std::lock_guard<std::mutex> g(timing_registry_mutex());
+  ThreadTiming agg;
+  for (ThreadTiming* p : timing_registry()) {
+    for (int i = 0; i < static_cast<int>(Bin::kCount); ++i) {
+      agg.dur[i] += p->dur[i];
+      agg.cnt[i] += p->cnt[i];
+    }
+  }
+  os << "\n=== eigfft timing report ===\n";
+  auto print = [&](const char* name, int idx) {
+    os << "  " << name << ": total=" << agg.dur[idx] << " s";
+    if (agg.cnt[idx] > 0) os << " (calls=" << agg.cnt[idx] << ", avg=" << (agg.dur[idx] / static_cast<double>(agg.cnt[idx])) << " s)";
+    os << "\n";
+  };
+  print("plan_cache_lookup", static_cast<int>(Bin::PlanCacheLookup));
+  print("plan_new", static_cast<int>(Bin::PlanNew));
+  print("algorithm_dispatch", static_cast<int>(Bin::AlgorithmDispatch));
+  print("pre_butterfly", static_cast<int>(Bin::PreButterfly));
+  print("butterfly_stage", static_cast<int>(Bin::ButterflyStage));
+  print("post_butterfly", static_cast<int>(Bin::PostButterfly));
+}
+
+// Snapshot/delta helpers for per-test reporting.
+struct TimingSnapshot {
+  double dur[static_cast<int>(Bin::kCount)];
+  uint64_t cnt[static_cast<int>(Bin::kCount)];
+  TimingSnapshot() {
+    for (int i = 0; i < static_cast<int>(Bin::kCount); ++i) { dur[i] = 0.0; cnt[i] = 0; }
+  }
+};
+
+inline TimingSnapshot timing_snapshot() {
+  std::lock_guard<std::mutex> g(timing_registry_mutex());
+  TimingSnapshot out;
+  for (ThreadTiming* p : timing_registry()) {
+    for (int i = 0; i < static_cast<int>(Bin::kCount); ++i) {
+      out.dur[i] += p->dur[i];
+      out.cnt[i] += p->cnt[i];
+    }
+  }
+  return out;
+}
+
+inline void timing_report_delta(const TimingSnapshot& before, const TimingSnapshot& after, std::ostream& os, const std::string& label = std::string()) {
+  os << "\n=== eigfft timing delta";
+  if (!label.empty()) os << " (" << label << ")";
+  os << " ===\n";
+  auto print = [&](const char* name, int idx) {
+    const double d = after.dur[idx] - before.dur[idx];
+    const uint64_t c = after.cnt[idx] - before.cnt[idx];
+    os << "  " << name << ": delta=" << d << " s";
+    if (c > 0) os << " (calls=" << c << ", avg=" << (d / static_cast<double>(c)) << " s)";
+    os << "\n";
+  };
+  print("plan_cache_lookup", static_cast<int>(Bin::PlanCacheLookup));
+  print("plan_new", static_cast<int>(Bin::PlanNew));
+  print("algorithm_dispatch", static_cast<int>(Bin::AlgorithmDispatch));
+  print("pre_butterfly", static_cast<int>(Bin::PreButterfly));
+  print("butterfly_stage", static_cast<int>(Bin::ButterflyStage));
+  print("post_butterfly", static_cast<int>(Bin::PostButterfly));
+}
+} // namespace timing_internal
+#endif // EIGFFT_TIMING
 
 class WorkerPool {
  public:
@@ -358,6 +501,7 @@ struct StockhamState : KernelContext {
     if ((desired > arena.stockham_thread_capacity) && plan_owner && plan_owner->arena_resizer) {
       const int lanes = std::max(1, arena.stockham_lane_capacity);
       plan_owner->arena_resizer(arena, plan_owner->N, desired, lanes);
+    
     }
     const int clamped_threads = std::min(desired, arena.stockham_thread_capacity);
     if (clamped_threads > pool.size()) {
@@ -1048,6 +1192,10 @@ template<class T> struct Plan {
   butterfly_default_cooleytukey.simd_width = 1;
 
   butterfly_default_stockham = butterfly_default_cooleytukey;
+  // Stockham algorithm uses a Decimation-In-Frequency (DIF) scatter/permute
+  // pattern. Ensure the default butterfly method for Stockham is DIF so the
+  // ButterflyScatter path selects the matching math (y0=a+b, y1=(a-b)*w).
+  butterfly_default_stockham.method = ButterflyMethod::DIF;
 
   butterfly_default_external = butterfly_default_cooleytukey;
   }
@@ -1236,6 +1384,31 @@ inline void validate_fft_axis(const Plan<T>& P, const AxisLayout<T>& layout) {
     throw std::invalid_argument("AxisLayout axis_size must match Plan::N.");
 }
 
+// Unified, inline tracing helper for layout/stride information used by
+// multiple algorithms. Guarded by EIGFFT_TRACE_LAYOUT so it can be
+// enabled in one place to produce consistent prints for different kernels.
+template<class T>
+inline void trace_layout_info(const char* alg,
+                              const AxisLayout<T>& layout,
+                              Eigen::Index axis_stride,
+                              Eigen::Index batch_stride,
+                              int lane_cols,
+                              int B,
+                              int lane_capacity = -1) {
+#if EIGFFT_TRACE_LAYOUT
+  std::cout << "[" << alg << "] axis_stride=" << axis_stride
+            << " batch_stride=" << batch_stride;
+  if (lane_capacity >= 0) std::cout << " lane_capacity=" << lane_capacity;
+  std::cout << " lane_cols(final)=" << lane_cols << std::endl;
+  for (int bi = 0; bi < std::min(3, B); ++bi) {
+    const void* ptr = static_cast<const void*>(layout.base + static_cast<std::size_t>(bi) * (std::size_t)batch_stride);
+    std::cout << "[" << alg << "] base[" << bi << "]=" << ptr << std::endl;
+  }
+#else
+  (void)alg; (void)layout; (void)axis_stride; (void)batch_stride; (void)lane_cols; (void)B; (void)lane_capacity;
+#endif
+}
+
 // Prepare Plan workspace and compute lane/stride values used by execution paths.
 template<class T>
 inline void prepare_plan_workspace(const Plan<T>& P, const AxisLayout<T>& layout,
@@ -1275,27 +1448,13 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   metadata.record_plan_twiddles(P);
   const detail::LayoutMetadataWriter<T> layout_writer(layout, static_cast<std::size_t>(N));
   if (layout_writer.enabled()) {
-    std::vector<int> current_map(N);
-    std::vector<int> next_map(N);
-    for (int i = 0; i < N; ++i) current_map[i] = i;
-    for (int stage = 0; stage < stages; ++stage) {
-      const int m = 1 << stage;
-      const int segments = N >> (stage + 1);  // N / (2 * m)
-      const int halfN = N >> 1;
-      for (int j = 0; j < m; ++j) {
-        for (int g = 0; g < segments; ++g) {
-          const int idx0 = (2 * j) * segments + g;
-          const int idx1 = idx0 + segments;
-          const int out0 = j * segments + g;
-          const int out1 = out0 + halfN;
-          next_map[out0] = current_map[idx0];
-          next_map[out1] = current_map[idx1];
-        }
-      }
-      current_map.swap(next_map);
-    }
+    // Cooley–Tukey kernel produces output in natural order because it
+    // bit-reverses the input before the butterfly stages. To keep the
+    // metadata consistent with the actual output (and aligned with the
+    // Stockham autosort kernel), record an identity mapping: each
+    // output position maps to itself.
     for (int pos = 0; pos < N; ++pos) {
-      layout_writer.set(static_cast<std::size_t>(pos), current_map[pos]);
+      layout_writer.set(static_cast<std::size_t>(pos), pos);
     }
   }
   const detail::StageSnapshotWriter<T> snap(layout, static_cast<std::size_t>(N), stages);
@@ -1313,16 +1472,13 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   const bool parallel_enabled = P.use_threads && threads > 1;
 
   const int chunk_count = (B + active_lane_cols - 1) / active_lane_cols;
-  // Print actual stride/ptr info used by Cooley–Tukey (helpful for batch-pitch mismatch)
-  std::cout << "[cooleytukey] axis_stride=" << axis_stride
-            << " batch_stride=" << batch_stride
-            << " lane_cols=" << active_lane_cols << std::endl;
-  for (int bi = 0; bi < std::min(3, B); ++bi) {
-    const void* ptr = static_cast<const void*>(layout.base + static_cast<std::size_t>(bi) * (std::size_t)batch_stride);
-    std::cout << "[cooleytukey] base[" << bi << "]=" << ptr << std::endl;
-  }
+  // Unified trace for layout/stride info (no-op unless EIGFFT_TRACE_LAYOUT=1)
+  detail::trace_layout_info<T>("cooleytukey", layout, axis_stride, batch_stride, static_cast<int>(active_lane_cols), B);
   const int* bitrev = P.bitrev;
 
+#if EIGFFT_TIMING
+  timing_internal::ScopedTimer __t_pre_permute(timing_internal::Bin::PreButterfly);
+#endif
   bool permuted_in_parallel = false;
 #ifdef _OPENMP
   if (parallel_enabled) {
@@ -1377,6 +1533,10 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
     }
   }
 
+  
+#if EIGFFT_TIMING
+  timing_internal::ScopedTimer __t_butterfly(timing_internal::Bin::ButterflyStage);
+#endif
   for (int len = 2, stage_idx = 0; len <= N; len <<= 1, ++stage_idx) {
   const int half = len >> 1;
   const int step = N / len;
@@ -1539,6 +1699,10 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
     }
   }
 
+#if EIGFFT_TIMING
+  timing_internal::ScopedTimer __t_post_bfly(timing_internal::Bin::PostButterfly);
+#endif
+
   if (P.inverse) {
     const T scale = T(1) / T(N);
     for (int col = 0; col < B; ++col) {
@@ -1564,8 +1728,14 @@ inline void fft_apply_axis(const Plan<T>& P, const AxisLayout<T>& layout)
 
   const auto& descriptor = P.kernel();
   if (descriptor.execute_axis) {
+#if EIGFFT_TIMING
+    detail::timing_internal::ScopedTimer __t_alg(detail::timing_internal::Bin::AlgorithmDispatch);
+#endif
     descriptor.execute_axis(P, layout, P.kernel_state());
   } else {
+#if EIGFFT_TIMING
+    detail::timing_internal::ScopedTimer __t_alg(detail::timing_internal::Bin::AlgorithmDispatch);
+#endif
     detail::cooleytukey_execute_axis(P, layout, P.kernel_state());
   }
 }
@@ -1753,15 +1923,8 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
   const Eigen::Index axis_stride = layout.axis_stride;
   const Eigen::Index batch_stride = layout.batch_stride;
 #if 1
-  // Print Stockham stride/ptr info (single-shot)
-  std::cout << "[stockham] axis_stride=" << axis_stride
-            << " batch_stride=" << batch_stride
-            << " lane_capacity=" << lane_capacity
-            << " lane_cols(final)=" << lane_cols << std::endl;
-  for (int bi = 0; bi < std::min(3, static_cast<int>(layout.batch_size)); ++bi) {
-    const void* ptr = static_cast<const void*>(layout.base + static_cast<std::size_t>(bi) * (std::size_t)batch_stride);
-    std::cout << "[stockham] base[" << bi << "]=" << ptr << std::endl;
-  }
+  // Unified trace for layout/stride info (no-op unless EIGFFT_TRACE_LAYOUT=1)
+  detail::trace_layout_info<T>("stockham", layout, axis_stride, batch_stride, lane_cols, static_cast<int>(layout.batch_size), lane_capacity);
 #endif
 #if EIGFFT_TRACE_STOCKHAM
   std::cout << "[stockham] dispatch=" << dispatch_id
@@ -1838,6 +2001,9 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
       std::cout << "[stockham] load phase start" << std::endl;
     }
     #endif
+#if EIGFFT_TIMING
+    timing_internal::ScopedTimer __t_pre_load(timing_internal::Bin::PreButterfly);
+#endif
     for (int i = 0; i < N; ++i) {
       const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
   Complex* dest = stage_in + i * lane_capacity;
@@ -1866,6 +2032,9 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
       std::cout << "[stockham] transform loop start" << std::endl;
     }
     #endif
+#if EIGFFT_TIMING
+    timing_internal::ScopedTimer __t_transform(timing_internal::Bin::ButterflyStage);
+#endif
     for (int stage = 0; stage < stages; ++stage) {
       const int m = 1 << stage;
       const int distance = m << 1;
@@ -1941,6 +2110,9 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
         std::cout << "[stockham] store inverse phase start" << std::endl;
       }
       #endif
+  #if EIGFFT_TIMING
+      timing_internal::ScopedTimer __t_post_store(timing_internal::Bin::PostButterfly);
+  #endif
       for (int i = 0; i < N; ++i) {
         const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
   const Complex* src = final_buf + i * lane_capacity;
@@ -1957,12 +2129,15 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
         }
       }
     } else {
-      #if EIGFFT_TRACE_STOCKHAM
-      if (start == 0 && worker_id == 0) {
-        std::cout << "[stockham] store phase start" << std::endl;
-      }
-      #endif
-      for (int i = 0; i < N; ++i) {
+  #if EIGFFT_TRACE_STOCKHAM
+  if (start == 0 && worker_id == 0) {
+    std::cout << "[stockham] store phase start" << std::endl;
+  }
+  #endif
+#if EIGFFT_TIMING
+  timing_internal::ScopedTimer __t_post_store2(timing_internal::Bin::PostButterfly);
+#endif
+  for (int i = 0; i < N; ++i) {
         const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
 const Complex* src = final_buf + i * lane_capacity;
         for (int lane = 0; lane < safe_width; ++lane) {

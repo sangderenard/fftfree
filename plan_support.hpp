@@ -313,6 +313,9 @@ class PlanCache {
   // Get or create a plan for the given configuration. Each token owns an
   // exclusive plan instance so call sites never share scratch buffers.
   Token get_plan(int N, bool inverse, const PlanRuntimeConfig& cfg) {
+#if EIGFFT_TIMING
+  detail::timing_internal::ScopedTimer __t_plan_cache(detail::timing_internal::Bin::PlanCacheLookup);
+#endif
     auto runtime_cfg = normalize_config(cfg);
     PlanKey key{N, inverse, runtime_cfg.threads, runtime_cfg.lanes,
                 runtime_cfg.transpose_capacity};
@@ -453,11 +456,18 @@ class PlanCache {
                               std::size_t copies) {
     if (copies == 0) copies = 1;
     while (bucket.entries.size() < copies) {
-      auto env = std::make_unique<PlanEnvironment<Scalar>>();
-      PlanRuntimeConfig cfg = runtime_cfg;
-      cfg.inverse = key.inverse;
-      env->initialize(key.N, key.inverse, cfg);
-      bucket.entries.push_back({std::move(env), false});
+  auto env = std::make_unique<PlanEnvironment<Scalar>>();
+  PlanRuntimeConfig cfg = runtime_cfg;
+  cfg.inverse = key.inverse;
+#if EIGFFT_TIMING
+  {
+    detail::timing_internal::ScopedTimer __t_new_plan(detail::timing_internal::Bin::PlanNew);
+    env->initialize(key.N, key.inverse, cfg);
+  }
+#else
+  env->initialize(key.N, key.inverse, cfg);
+#endif
+  bucket.entries.push_back({std::move(env), false});
     }
   }
 
