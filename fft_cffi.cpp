@@ -3,6 +3,7 @@
 #include "fft_cffi.hpp"
 #include "eigen_fft.hpp"
 #include "plan_support.hpp"
+#include "crash_handler.hpp"
 #include <vector>
 #include <complex>
 #include <algorithm>
@@ -48,67 +49,9 @@ struct FftContext {
     int allow_outer_parallel = 1;
     int allow_inner_parallel = 0;
     int inner_threads = 0;
-    // Persistent worker pool (outer parallelism only)
-    struct WorkerPool {
-        struct Job { std::function<void(size_t,size_t,int)> fn; size_t total=0; size_t chunk=1; size_t chunk_count=0; std::atomic<size_t> next{0}; std::atomic<int> pending{0}; bool active=false; };
-        std::vector<std::thread> workers;
-        std::mutex mu;
-        std::condition_variable cv_job, cv_done;
-        Job job;
-        bool stop=false;
-        explicit WorkerPool(int threads) { reset(threads); }
-        ~WorkerPool(){ shutdown(); }
-        void reset(int threads) {
-            shutdown();
-            threads = std::max(1, threads);
-            stop=false; job.active=false; job.fn=nullptr;
-            for (int i=0;i<threads;i++) workers.emplace_back([this,i](){ loop(i); });
-        }
-        void shutdown(){
-            {
-                std::lock_guard<std::mutex> lk(mu);
-                stop=true; job.active=false;
-            }
-            cv_job.notify_all();
-            for (auto &t: workers) if (t.joinable()) t.join();
-            workers.clear();
-        }
-        int size() const {
-            return static_cast<int>(workers.size());
-        }
-        void loop(int id){
-            for(;;){
-                std::unique_lock<std::mutex> lk(mu);
-                cv_job.wait(lk,[&]{ return stop || job.active;});
-                if (stop) return;
-                lk.unlock();
-                for(;;){
-                    size_t idx = job.next.fetch_add(1, std::memory_order_acq_rel);
-                    if (idx >= job.chunk_count) break;
-                    const size_t start = idx * job.chunk;
-                    const size_t end = std::min(job.total, start + job.chunk);
-                    job.fn(start,end,id);
-                }
-                const int rem = job.pending.fetch_sub(1,std::memory_order_acq_rel);
-                if (rem == 1){
-                    std::lock_guard<std::mutex> lk2(mu);
-                    job.active=false; cv_done.notify_one();
-                }
-            }
-        }
-        void parallel_for(size_t total, size_t chunk, const std::function<void(size_t,size_t,int)>& fn){
-            if (workers.empty() || total==0){ fn(0,total,0); return; }
-            std::unique_lock<std::mutex> lk(mu);
-            cv_done.wait(lk,[&]{ return !job.active;});
-            job.fn=fn; job.total=total; job.chunk=std::max<size_t>(1,chunk);
-            job.chunk_count = (total + job.chunk - 1) / job.chunk;
-            job.next.store(0); job.pending.store((int)workers.size()); job.active=true;
-            lk.unlock(); cv_job.notify_all();
-            std::unique_lock<std::mutex> lk2(mu);
-            cv_done.wait(lk2,[&]{ return !job.active;});
-        }
-    };
-    std::unique_ptr<WorkerPool> pool;
+    // Persistent worker pool (outer parallelism only). Use the canonical
+    // WorkerPool implementation from `eigen_fft.hpp` to avoid duplication.
+    std::unique_ptr<eigfft::WorkerPool> pool;
 };
 
 static eigfft::PlanRuntimeConfig compute_effective_runtime(const FftContext& ctx) {
@@ -143,7 +86,7 @@ static eigfft::PlanRuntimeConfig compute_effective_runtime(const FftContext& ctx
 
 // Dispatcher that forwards jobs to the context's outer WorkerPool, or runs inline if unavailable.
 struct PoolDispatcher : public eigfft::JobDispatcher {
-    FftContext::WorkerPool* pool = nullptr;
+    eigfft::WorkerPool* pool = nullptr;
     void parallel_for(size_t total, size_t chunk, const Fn& fn) override {
         if (!pool || total == 0) {
             eigfft::InlineDispatcher::instance().parallel_for(total, chunk, fn);
@@ -261,6 +204,8 @@ void* fft_init(size_t n, int threads, int lanes, int inverse, int kernel, int ra
 
 void* fft_init_ex(size_t n, int threads, int lanes, int inverse, int kernel, int radix, const int* radix_pattern, size_t radix_pattern_len, int pad_mode, int window, int hop, int stft_mode) {
     try {
+        // Ensure we install the crash handler for processes that call the C API
+        fftfree::install_crash_handler();
         if (n == 0) return nullptr;
         auto* ctx = new FftContext();
         ctx->N = static_cast<int>(n);
@@ -581,6 +526,8 @@ void* fft_init_full(size_t n,
                     int allow_inner_parallel,
                     int inner_threads) {
     try {
+        // Ensure crash handler is active for CFFI users (Python demo, etc.)
+        fftfree::install_crash_handler();
         auto* ctx = new FftContext();
         ctx->N = static_cast<int>(n);
         ctx->inverse = (inverse != 0);
@@ -624,7 +571,7 @@ void* fft_init_full(size_t n,
         }
         // Create worker pool for outer parallelism if requested
         if ((ctx->allow_outer_parallel != 0) && ctx->cfg.threads > 1) {
-            ctx->pool = std::make_unique<FftContext::WorkerPool>(ctx->cfg.threads);
+            ctx->pool = std::make_unique<eigfft::WorkerPool>(ctx->cfg.threads);
         }
         return ctx;
     } catch (...) {

@@ -41,6 +41,7 @@ endif()
 option(FFTFREE_OPENMP "Enable OpenMP" ON)
 option(FFTFREE_FAST_MATH "Enable fast-math" ON)
 option(EIGFFT_TIMING "Enable timing instrumentation (compile-time)" OFF)
+option(EIGFFT_TRACE_THREADS "Enable detailed thread/worker pool tracing" OFF)
 
 # Detect the highest SIMD level actually supported by the host CPU when AUTO is
 # requested on MSVC.  Using compiler-flag probes alone is insufficient because
@@ -134,6 +135,10 @@ function(fftfree_apply_target_options target)
     target_compile_definitions(${target} PRIVATE EIGFFT_TIMING=1)
   endif()
 
+  if (EIGFFT_TRACE_THREADS)
+    target_compile_definitions(${target} PRIVATE EIGFFT_TRACE_THREADS=1)
+  endif()
+
   if (MSVC)
     set(_fftf_native_flag "")
     set(_fftf_native_flag_message "default (compiler-defined)")
@@ -186,6 +191,13 @@ function(fftfree_apply_target_options target)
     if (FFTFREE_FAST_MATH)
       target_compile_options(${target} PRIVATE /fp:fast)
     endif()
+  # Workarounds for MSVC Debug build crashes observed on some toolsets:
+  # - enable /FS to reduce PDB write races
+  # - prefer /Z7 (embedded debug info) in Debug to avoid PDB generation bugs
+  #   that can trigger internal compiler failures when writing complex debug
+  #   information.
+  target_compile_options(${target} PRIVATE $<$<CONFIG:Debug>:/FS>)
+  target_compile_options(${target} PRIVATE $<$<CONFIG:Debug>:/Z7>)
   else()
     if (FFTFREE_NATIVE)
       if (FFTFREE_NATIVE_ARCH STREQUAL "AUTO")
@@ -219,3 +231,8 @@ add_executable(fft_tests tests/fftfree_tests.cpp)
 fftfree_apply_target_options(fft_tests)
 
 add_test(NAME fftfree.tests COMMAND fft_tests)
+
+# Thread tracing test application exercising worker pool dispatch.
+add_executable(fft_threads_trace tests/threads_trace_test.cpp)
+fftfree_apply_target_options(fft_threads_trace)
+add_test(NAME fftfree.threads_trace COMMAND fft_threads_trace)

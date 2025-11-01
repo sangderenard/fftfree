@@ -1,5 +1,6 @@
 #include "eigen_fft.hpp"
 #include "plan_support.hpp"
+#include "crash_handler.hpp"
 #include <memory>
 
 #include <Eigen/Core>
@@ -505,6 +506,8 @@ int main(int argc, char** argv) {
   std::cout << "fftfree micro-benchmark" << std::endl;
 
   try {
+    // Install crash handler early so crashes produce minidumps/backtraces.
+    fftfree::install_crash_handler();
     dump_simd_caps();
     Eigen::setNbThreads(1);
 

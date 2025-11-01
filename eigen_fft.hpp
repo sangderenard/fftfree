@@ -10,6 +10,9 @@
 #define EIGFFT_TRACE_LAYOUT 0
 #endif
 
+#ifndef EIGFFT_TRACE_THREADS
+#define EIGFFT_TRACE_THREADS 0
+#endif
 
 
 // eigen_fft.hpp (header-only)
@@ -307,6 +310,10 @@ class WorkerPool {
     }
 
     if (requested <= total_threads_) {
+#if EIGFFT_TRACE_THREADS
+      std::cout << "[pool] resize request threads=" << requested
+                << " (keeping existing total_threads=" << total_threads_ << ")" << std::endl;
+#endif
       return;  // keep existing fleet alive; never shrink in the hot path
     }
 
@@ -319,6 +326,11 @@ class WorkerPool {
       workers_.emplace_back([this, worker_id]() { worker_loop(worker_id); });
       ++worker_count_;
       ++total_threads_;
+      
+#if EIGFFT_TRACE_THREADS
+      std::cout << "[pool] started worker id=" << worker_id
+                << " total_threads=" << total_threads_ << std::endl;
+#endif
     }
   }
 
@@ -330,7 +342,7 @@ class WorkerPool {
     if (chunk == 0) chunk = 1;
     const size_t chunk_size = chunk;
     std::function<void(size_t, size_t, int)> wrapped = std::forward<Fn>(fn);
-#if EIGFFT_TRACE_STOCKHAM
+#if EIGFFT_TRACE_THREADS
     std::cout << "[pool] parallel_for begin total=" << total_items
               << " chunk=" << chunk_size
               << " worker_count=" << worker_count_
@@ -343,7 +355,7 @@ class WorkerPool {
         wrapped(start, end, 0);
         start = end;
       }
-#if EIGFFT_TRACE_STOCKHAM
+#if EIGFFT_TRACE_THREADS
       std::cout << "[pool] parallel_for completed inline" << std::endl;
 #endif
       return;
@@ -364,20 +376,22 @@ class WorkerPool {
     cv_job_.notify_all();
 
     drain_chunks(0);
-    // Main thread finished its share: decrement pending and possibly close job.
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      const int remaining = job_.pending.fetch_sub(1, std::memory_order_acq_rel);
-      if (remaining == 1) {
-        job_.active = false;
-        cv_done_.notify_one();
-      }
-    }
 
+    // Main thread finished. Decrement and wait ATOMICALLY.
     std::unique_lock<std::mutex> lock(mutex_);
-    cv_done_.wait(lock, [&] { return !job_.active; });
+    const int remaining = job_.pending.fetch_sub(1, std::memory_order_acq_rel);
+
+    if (remaining > 1) {
+      // We are NOT the last thread, so wait for the last one.
+      cv_done_.wait(lock, [&] { return !job_.active; });
+    } else {
+      // We ARE the last thread. Close the job and notify anyone waiting.
+      job_.active = false;
+      cv_done_.notify_one();
+    }
+    // At this point all workers (and main thread) have finished draining chunks.
     job_.fn = nullptr;
-#if EIGFFT_TRACE_STOCKHAM
+#if EIGFFT_TRACE_THREADS
     std::cout << "[pool] parallel_for finished" << std::endl;
 #endif
   }
@@ -418,18 +432,21 @@ class WorkerPool {
       std::unique_lock<std::mutex> lock(mutex_);
       cv_job_.wait(lock, [&] { return stop_ || job_.active; });
       if (stop_) return;
-#if EIGFFT_TRACE_STOCKHAM
+#if EIGFFT_TRACE_THREADS
   std::cout << "[pool] worker " << worker_id << " woke" << std::endl;
 #endif
       lock.unlock();
 
       drain_chunks(worker_id);
 
-      const int remaining = job_.pending.fetch_sub(1, std::memory_order_acq_rel);
-      if (remaining == 1) {
-        std::lock_guard<std::mutex> done_lock(mutex_);
-        job_.active = false;
-        cv_done_.notify_one();
+      // Worker thread finished. Decrement and signal ATOMICALLY.
+      {
+        std::unique_lock<std::mutex> lock2(mutex_);
+        const int remaining = job_.pending.fetch_sub(1, std::memory_order_acq_rel);
+        if (remaining == 1) {
+          job_.active = false;
+          cv_done_.notify_one();
+        }
       }
     }
   }
@@ -440,7 +457,7 @@ class WorkerPool {
       if (index >= job_.chunk_count) break;
       const size_t start = index * job_.chunk;
       const size_t end = std::min(job_.total, start + job_.chunk);
-#if EIGFFT_TRACE_STOCKHAM
+#if EIGFFT_TRACE_THREADS
       std::cout << "[pool] worker " << worker_id << " processing chunk idx=" << index
             << " start=" << start << " end=" << end << std::endl;
 #endif

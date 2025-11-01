@@ -3,6 +3,10 @@
         "stdexcept": "cpp",
         "utility": "cpp",
         "tuple": "cpp",
-        "random": "cpp"
+        "random": "cpp",
+        "algorithm": "cpp",
+        "limits": "cpp",
+        "chrono": "cpp",
+        "xutility": "cpp"
     }
 }
