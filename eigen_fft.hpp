@@ -38,14 +38,7 @@
 // #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 //   #include <xmmintrin.h>  // FTZ/DAZ
 // #endif
-#ifdef _OPENMP
-#include <omp.h>
-#endif
-
-// Enforce OpenMP availability unless explicitly overridden for debug builds.
-#if !defined(_OPENMP) && !defined(EIGFFT_ALLOW_SEQUENTIAL)
-#error "fftfree requires OpenMP; rebuild with OpenMP enabled or define EIGFFT_ALLOW_SEQUENTIAL to opt-in to the sequential fallback."
-#endif
+// Sequential execution is always allowed; parallelism is coordinated by callers.
 
 namespace eigfft {
 
@@ -54,6 +47,30 @@ struct Plan;
 
 struct KernelContext {
   virtual ~KernelContext() = default;
+};
+
+// Lightweight job-dispatch interface: algorithms call this to either
+// run work inline or post to an external dispatcher provided by callers.
+class JobDispatcher {
+ public:
+  using Fn = std::function<void(size_t,size_t,int)>;
+  virtual ~JobDispatcher() = default;
+  virtual void parallel_for(size_t total, size_t chunk, const Fn& fn) = 0;
+};
+
+// Default inline dispatcher: runs the job in the current thread.
+class InlineDispatcher : public JobDispatcher {
+ public:
+  static InlineDispatcher& instance() { static InlineDispatcher d; return d; }
+  void parallel_for(size_t total, size_t chunk, const Fn& fn) override {
+    if (chunk == 0) chunk = 1;
+    const size_t chunks = (total + chunk - 1) / chunk;
+    for (size_t idx = 0; idx < chunks; ++idx) {
+      const size_t start = idx * chunk;
+      const size_t end = std::min(total, start + chunk);
+      fn(start, end, 0);
+    }
+  }
 };
 
 template <class T>
@@ -445,6 +462,7 @@ class WorkerPool {
 // headers. The butterfly headers declare their own `eigfft::detail` scope so
 // include them at namespace scope to avoid nested `eigfft::detail::eigfft::detail`.
 } // namespace detail
+using detail::WorkerPool;
 } // namespace eigfft
 
 // Force the core to use the external butterfly types (compat header with
@@ -473,13 +491,7 @@ struct StockhamState : KernelContext {
 
   explicit StockhamState(Plan<T>& plan, PlanArena<T>& arena_ref)
       : arena(arena_ref),
-        pool(plan.use_threads ? plan.effective_threads(plan.packet_cols) : 1),
-        N(plan.N),
-        plan_owner(&plan) {
-    const int threads = std::max(1, pool.size());
-    if (arena.stockham_thread_capacity < threads) {
-      throw std::invalid_argument("PlanArena stockham_thread_capacity too small for requested threads");
-    }
+        N(plan.N) {
     if (arena.stockham_lane_capacity <= 0) {
       throw std::invalid_argument("PlanArena stockham_lane_capacity must be positive");
     }
@@ -488,40 +500,38 @@ struct StockhamState : KernelContext {
     }
   }
 
-  void ensure_lane_capacity(int requested) {
-    const int desired = std::max(1, requested);
-    if ((desired > arena.stockham_lane_capacity) && plan_owner && plan_owner->arena_resizer) {
-      const int threads = std::max(1, pool.size());
-      plan_owner->arena_resizer(arena, plan_owner->N, threads, desired);
-    }
-  }
+  void ensure_lane_capacity(int /*requested*/) {}
 
-  void ensure_threads(int threads) {
-    int desired = std::max(1, threads);
-    if ((desired > arena.stockham_thread_capacity) && plan_owner && plan_owner->arena_resizer) {
-      const int lanes = std::max(1, arena.stockham_lane_capacity);
-      plan_owner->arena_resizer(arena, plan_owner->N, desired, lanes);
-    
-    }
-    const int clamped_threads = std::min(desired, arena.stockham_thread_capacity);
-    if (clamped_threads > pool.size()) {
-      pool.reset(clamped_threads);
-    }
-  }
+  void ensure_threads(int /*threads*/) {}
 
   size_t thread_stride() const {
     return static_cast<size_t>(N) * static_cast<size_t>(std::max(1, arena.stockham_lane_capacity));
   }
 
   PlanArena<T>& arena;
-  WorkerPool pool;
   int N = 0;
-  Plan<T>* plan_owner = nullptr;
 };
 
 }  // namespace detail
 
-enum class MetadataKind { Twiddle, LayoutMap, StageSnapshot, StageParams, ButterflyPairs, StageInvariant, TwiddleIndexMap };
+enum class MetadataKind {
+  Twiddle,
+  LayoutMap,
+  StageSnapshot,
+  StageParams,
+  ButterflyPairs,
+  StageInvariant,
+  TwiddleIndexMap,
+  // New: Per-bin angular frequency metadata (omega_k = 2*pi*k/N)
+  Omega,
+  // New: Per-batch versions capture all windows (flattened B dimension)
+  StageSnapshotAll,
+  ButterflyPairsAll,
+  TwiddleIndexMapAll
+};
+
+// Cooley–Tukey kernel state mirroring Stockham's persistent WorkerPool model.
+// Cooley–Tukey uses single-threaded execution by design to avoid inner parallelism.
 
 template <class T>
 struct MetadataRequest {
@@ -790,6 +800,133 @@ struct TwiddleIndexWriter {
   }
 };
 
+// New metadata writers
+template <class T>
+struct OmegaMetadataWriter {
+  const MetadataRequest<T>* reqs = nullptr;
+  int count = 0;
+  std::complex<T>* buf = nullptr;
+  std::size_t capacity = 0;
+  std::size_t N = 0;
+
+  OmegaMetadataWriter(const AxisLayout<T>& layout, std::size_t n)
+      : reqs(layout.metadata_requests), count(layout.metadata_request_count), N(n) {
+    if (!reqs || count <= 0 || N == 0) return;
+    for (int i = 0; i < count; ++i) {
+      if (reqs[i].kind == MetadataKind::Omega) {
+        buf = reqs[i].complex_buffer;
+        capacity = reqs[i].element_count;
+        break;
+      }
+    }
+    if (buf && capacity < N) {
+      // Require capacity for full N; caller may ignore upper bins if half-packed
+      throw std::invalid_argument("Omega metadata buffer too small");
+    }
+  }
+  bool enabled() const { return buf && N > 0; }
+  void fill(const Plan<T>& plan) const {
+    if (!enabled()) return;
+    const std::size_t upper = (plan.transform_mode == Plan<T>::TransformMode::R2C && plan.half_spectrum)
+                                  ? static_cast<std::size_t>(plan.N/2 + 1)
+                                  : static_cast<std::size_t>(plan.N);
+    const T two_pi = static_cast<T>(2 * std::acos(T(-1)));
+    for (std::size_t k = 0; k < upper; ++k) {
+      const T omega = two_pi * static_cast<T>(k) / static_cast<T>(plan.N);
+      buf[k] = std::complex<T>(omega, T(0));
+    }
+  }
+};
+
+template <class T>
+struct StageSnapshotAllWriter {
+  const MetadataRequest<T>* reqs = nullptr;
+  int count = 0;
+  std::complex<T>* buf = nullptr;
+  std::size_t N = 0;
+  int stages = 0;
+  int B = 0;
+  StageSnapshotAllWriter(const AxisLayout<T>& layout, std::size_t n, int s, int batches)
+      : reqs(layout.metadata_requests), count(layout.metadata_request_count), buf(nullptr), N(n), stages(s), B(batches) {
+    if (!reqs || count <= 0 || N == 0 || stages <= 0 || B <= 0) return;
+    for (int i = 0; i < count; ++i) {
+      if (reqs[i].kind == MetadataKind::StageSnapshotAll) {
+        buf = reqs[i].complex_buffer;
+        if (!buf || reqs[i].element_count < N * static_cast<std::size_t>(stages) * static_cast<std::size_t>(B))
+          throw std::invalid_argument("StageSnapshotAll buffer too small");
+        break;
+      }
+    }
+  }
+  bool enabled() const { return buf && N && stages && B > 0; }
+  void set(int stage, int pos, int batch, const std::complex<T>& v) const {
+    if (!enabled()) return;
+    if (stage < 0 || stage >= stages || pos < 0 || (std::size_t)pos >= N || batch < 0 || batch >= B) return;
+    const std::size_t per_stage = N * static_cast<std::size_t>(B);
+    buf[static_cast<std::size_t>(stage) * per_stage + static_cast<std::size_t>(batch) * N + static_cast<std::size_t>(pos)] = v;
+  }
+};
+
+template <class T>
+struct ButterflyPairsAllWriter {
+  const MetadataRequest<T>* reqs = nullptr;
+  int count = 0;
+  std::complex<T>* buf = nullptr;
+  std::size_t N = 0;
+  int stages = 0;
+  int B = 0;
+  ButterflyPairsAllWriter(const AxisLayout<T>& layout, std::size_t n, int s, int batches)
+      : reqs(layout.metadata_requests), count(layout.metadata_request_count), buf(nullptr), N(n), stages(s), B(batches) {
+    if (!reqs || count <= 0 || N == 0 || stages <= 0 || B <= 0) return;
+    for (int i = 0; i < count; ++i) {
+      if (reqs[i].kind == MetadataKind::ButterflyPairsAll) {
+        buf = reqs[i].complex_buffer;
+        if (!buf || reqs[i].element_count < N * static_cast<std::size_t>(stages) * static_cast<std::size_t>(B))
+          throw std::invalid_argument("ButterflyPairsAll buffer too small");
+        break;
+      }
+    }
+  }
+  bool enabled() const { return buf && N && stages && B > 0; }
+  void set(int stage, int pos, int batch, int lhs, int rhs) const {
+    if (!enabled()) return;
+    if (stage < 0 || stage >= stages || pos < 0 || (std::size_t)pos >= N || batch < 0 || batch >= B) return;
+    const std::size_t per_stage = N * static_cast<std::size_t>(B);
+    buf[static_cast<std::size_t>(stage) * per_stage + static_cast<std::size_t>(batch) * N + static_cast<std::size_t>(pos)] =
+        std::complex<T>(static_cast<T>(lhs), static_cast<T>(rhs));
+  }
+};
+
+template <class T>
+struct TwiddleIndexAllWriter {
+  const MetadataRequest<T>* reqs = nullptr;
+  int count = 0;
+  std::complex<T>* buf = nullptr;
+  std::size_t N = 0;
+  int stages = 0;
+  int B = 0;
+  TwiddleIndexAllWriter(const AxisLayout<T>& layout, std::size_t n, int s, int batches)
+      : reqs(layout.metadata_requests), count(layout.metadata_request_count), buf(nullptr), N(n), stages(s), B(batches) {
+    if (!reqs || count <= 0 || N == 0 || stages <= 0 || B <= 0) return;
+    for (int i = 0; i < count; ++i) {
+      if (reqs[i].kind == MetadataKind::TwiddleIndexMapAll) {
+        buf = reqs[i].complex_buffer;
+        if (!buf || reqs[i].element_count < N * static_cast<std::size_t>(stages) * static_cast<std::size_t>(B))
+          throw std::invalid_argument("TwiddleIndexMapAll buffer too small");
+        break;
+      }
+    }
+  }
+  bool enabled() const { return buf && N && stages && B > 0; }
+  void set(int stage, int pos, int batch, int tw_index) const {
+    if (!enabled()) return;
+    if (stage < 0 || stage >= stages || pos < 0 || (std::size_t)pos >= N || batch < 0 || batch >= B) return;
+    const std::size_t per_stage = N * static_cast<std::size_t>(B);
+    buf[static_cast<std::size_t>(stage) * per_stage + static_cast<std::size_t>(batch) * N + static_cast<std::size_t>(pos)] =
+        std::complex<T>(static_cast<T>(tw_index), T(0));
+  }
+};
+
 }  // namespace detail
 
 enum class KernelKind { CooleyTukey, Stockham, External };
@@ -832,6 +969,8 @@ template<class T> struct Plan {
   using RowBuffer = Eigen::Matrix<Complex, 1, Eigen::Dynamic, Eigen::RowMajor>;
   using ArenaResizer = void (*)(PlanArena<T>&, int N, int threads, int lanes);
   struct KernelDescriptor;
+  // Transform mode and reduction hooks (hot-path, in-place)
+  enum class TransformMode { C2C = 0, R2C = 1, C2R = 2, R2R = 3 };
 
   int N;
   bool inverse;
@@ -841,6 +980,15 @@ template<class T> struct Plan {
   bool use_threads;
   int requested_threads;
   int packet_cols;  // auto from Eigen packets unless overridden
+  // Selected transform mode and optional magnitude reduction flag.
+  // - C2C: complex-to-complex (default)
+  // - R2C: real-to-complex (imag cleared pre-butterfly)
+  // - C2R: complex-to-real (imag cleared post-butterfly)
+  // - R2R: real-to-real (imag cleared both pre and post)
+  TransformMode transform_mode = TransformMode::C2C;
+  bool reduce_magnitude = false; // if true, post-butterfly reduces Complex -> |Complex| in-place (imag=0)
+  bool store_polar = false;      // if true, overwrite Complex as (mag, phase) interleaved: real=|z|, imag=arg(z)
+  bool half_spectrum = false;    // if true (R2C/C2R), use half-spectrum packing (first N/2+1 bins valid)
 
   // Per-plan default butterfly configs. These are hot-path stable pointers
   // (no allocations) that kernels will reference during execution. Users may
@@ -850,6 +998,9 @@ template<class T> struct Plan {
   ButterflyConfig<T> butterfly_default_cooleytukey;
   ButterflyConfig<T> butterfly_default_stockham;
   ButterflyConfig<T> butterfly_default_external;
+  // Optional per-stage radix pattern (e.g., {2,2,4}). If empty, the Plan
+  // should use its butterfly_default_* values (uniform radix) during execution.
+  std::vector<ButterflyRadix> radix_pattern;
 
   struct Limits {
     static constexpr int kCompileTimeMaxThreads = 16;
@@ -963,6 +1114,8 @@ template<class T> struct Plan {
   mutable std::size_t pending_nd_capacity = 0;
   const KernelDescriptor* kernel_desc_ = nullptr;
   std::unique_ptr<KernelContext> kernel_state_;
+  // Non-owning pointer to a dispatcher used by algorithms for optional job posting.
+  JobDispatcher* dispatcher_ = &InlineDispatcher::instance();
 
   struct KernelDescriptor {
     KernelKind kind = KernelKind::CooleyTukey;
@@ -1085,18 +1238,6 @@ template<class T> struct Plan {
   Plan(int n, PlanArena<T>& arena_ref, bool inv=false, bool threads=true, int max_threads=0)
       : N(n), inverse(inv), lgN(0), use_threads(threads),
         requested_threads(max_threads), packet_cols(1), arena(arena_ref) {
-#if !defined(EIGFFT_ALLOW_SEQUENTIAL)
-    if (!use_threads) {
-      throw std::invalid_argument(
-          "Sequential execution has been disabled. Define EIGFFT_ALLOW_SEQUENTIAL at build time to permit opt-out.");
-    }
-#else
-    if (!use_threads) {
-#if EIGFFT_DEBUG
-      std::cout << "Plan constructed with sequential override enabled." << std::endl;
-#endif
-    }
-#endif
 #if EIGFFT_DEBUG
     std::cout << "Plan constructor entered, N=" << N << std::endl;
 #endif
@@ -1218,29 +1359,16 @@ template<class T> struct Plan {
     // #endif
   }
 
-  int effective_threads(int batch_cols) const {
-  (void)batch_cols;
-  if (!use_threads) {
-#if defined(EIGFFT_ALLOW_SEQUENTIAL)
-    return 1;
-#else
-    throw std::logic_error(
-      "Sequential execution requested at runtime but disabled at build time.");
-#endif
-  }
-  int limit = requested_threads;
-#ifdef _OPENMP
-  const int runtime_cap = std::max(1, omp_get_max_threads());
-#else
-  int hw = static_cast<int>(std::thread::hardware_concurrency());
-  if (hw <= 0) hw = 1;
-  const int runtime_cap = std::max(1, hw);
-#endif
-  if (limit <= 0) limit = runtime_cap;
-  else limit = std::min(limit, runtime_cap);
-  limit = std::min(limit, Limits::kCompileTimeMaxThreads);
-  limit = std::min(limit, arena.stockham_thread_capacity);
-  return std::max(1, limit);
+  int effective_threads(int /*batch_cols*/) const {
+    if (!use_threads) return 1;
+    int limit = requested_threads;
+    int hw = static_cast<int>(std::thread::hardware_concurrency());
+    if (hw <= 0) hw = 1;
+    const int runtime_cap = hw;
+    if (limit <= 0) limit = runtime_cap; else limit = std::min(limit, runtime_cap);
+    limit = std::min(limit, Limits::kCompileTimeMaxThreads);
+    limit = std::min(limit, arena.stockham_thread_capacity);
+    return std::max(1, limit);
   }
 
   void ensure_workspace(int threads, int cols) const {
@@ -1270,6 +1398,9 @@ template<class T> struct Plan {
       kernel_state_.reset();
     }
   }
+
+  void set_dispatcher(JobDispatcher* d) { dispatcher_ = d ? d : &InlineDispatcher::instance(); }
+  JobDispatcher* dispatcher() const { return dispatcher_ ? dispatcher_ : const_cast<InlineDispatcher*>(&InlineDispatcher::instance()); }
 
   const KernelDescriptor& kernel() const {
     return kernel_desc_ ? *kernel_desc_ : cooleytukey_kernel();
@@ -1379,6 +1510,121 @@ inline void validate_fft_axis(const Plan<T>& P, const AxisLayout<T>& layout) {
     throw std::invalid_argument("AxisLayout axis_size must match Plan::N.");
 }
 
+// In-place pre/post transform hooks (hot path, no allocations)
+template<class T>
+inline void apply_pre_transform(const Plan<T>& P, const AxisLayout<T>& layout) {
+  using Complex = std::complex<T>;
+  const auto mode = P.transform_mode;
+  const int N = P.N;
+  const int B = static_cast<int>(layout.batch_size);
+  const Eigen::Index axis_stride = layout.axis_stride;
+  const Eigen::Index batch_stride = layout.batch_stride;
+
+  if (mode == Plan<T>::TransformMode::R2C) {
+    // Ensure input imaginary parts are zero; not strictly required but stabilizes results
+    for (int col = 0; col < B; ++col) {
+      Complex* base = layout.base + Eigen::Index(col) * batch_stride;
+      for (int i = 0; i < N; ++i) {
+        Complex& v = base[Eigen::Index(i) * axis_stride];
+        if (v.imag() != T(0)) v.imag(T(0));
+      }
+    }
+    return;
+  }
+
+  if (mode == Plan<T>::TransformMode::C2R) {
+    // If half-spectrum packing is enabled, expand bins 0..N/2 into full Hermitian spectrum
+    if (P.half_spectrum) {
+      for (int col = 0; col < B; ++col) {
+        Complex* base = layout.base + Eigen::Index(col) * batch_stride;
+        // If stored as polar, convert back to complex
+        if (P.store_polar) {
+          for (int k = 0; k <= N/2; ++k) {
+            const Eigen::Index k_off = Eigen::Index(k) * axis_stride;
+            const Complex pv = base[k_off];
+            const T mag = pv.real();
+            const T ph = pv.imag();
+            base[k_off] = Complex(mag * std::cos(ph), mag * std::sin(ph));
+          }
+        }
+        // Enforce real DC and Nyquist
+        base[0].imag(T(0));
+        base[Eigen::Index(N/2) * axis_stride].imag(T(0));
+        // Mirror to fill full spectrum
+        for (int k = 1; k < N/2; ++k) {
+          const Eigen::Index k_off = Eigen::Index(k) * axis_stride;
+          const Eigen::Index nk_off = Eigen::Index(N - k) * axis_stride;
+          base[nk_off] = std::conj(base[k_off]);
+        }
+      }
+    }
+    return;
+  }
+}
+
+template<class T>
+inline void apply_post_transform(const Plan<T>& P, const AxisLayout<T>& layout) {
+  using Complex = std::complex<T>;
+  const auto mode = P.transform_mode;
+  const int N = P.N;
+  const int B = static_cast<int>(layout.batch_size);
+  const Eigen::Index axis_stride = layout.axis_stride;
+  const Eigen::Index batch_stride = layout.batch_stride;
+
+  if (mode == Plan<T>::TransformMode::R2C && P.half_spectrum) {
+    // Ensure DC and Nyquist are real and zero the redundant half to make packing explicit
+    for (int col = 0; col < B; ++col) {
+      Complex* base = layout.base + Eigen::Index(col) * batch_stride;
+      base[0].imag(T(0));
+      base[Eigen::Index(N/2) * axis_stride].imag(T(0));
+      for (int k = N/2 + 1; k < N; ++k) {
+        base[Eigen::Index(k) * axis_stride] = Complex(T(0), T(0));
+      }
+    }
+  }
+
+  // Polar transform requested: overwrite as (mag, phase)
+  if (P.store_polar) {
+    for (int col = 0; col < B; ++col) {
+      Complex* base = layout.base + Eigen::Index(col) * batch_stride;
+      const int upper = (mode == Plan<T>::TransformMode::R2C && P.half_spectrum) ? (N/2 + 1) : N;
+      for (int i = 0; i < upper; ++i) {
+        Complex& v = base[Eigen::Index(i) * axis_stride];
+        const T mag = std::abs(v);
+        const T ph = std::arg(v);
+        v.real(mag);
+        v.imag(ph);
+      }
+    }
+    return;
+  }
+  // Magnitude-only reduction
+  if (P.reduce_magnitude) {
+    for (int col = 0; col < B; ++col) {
+      Complex* base = layout.base + Eigen::Index(col) * batch_stride;
+      const int upper = (mode == Plan<T>::TransformMode::R2C && P.half_spectrum) ? (N/2 + 1) : N;
+      for (int i = 0; i < upper; ++i) {
+        Complex& v = base[Eigen::Index(i) * axis_stride];
+        const T mag = std::abs(v);
+        v.real(mag);
+        v.imag(T(0));
+      }
+    }
+    return;
+  }
+
+  if (mode == Plan<T>::TransformMode::C2R) {
+    // Ensure small imaginary drift is cleared
+    for (int col = 0; col < B; ++col) {
+      Complex* base = layout.base + Eigen::Index(col) * batch_stride;
+      for (int i = 0; i < N; ++i) {
+        Complex& v = base[Eigen::Index(i) * axis_stride];
+        if (v.imag() != T(0)) v.imag(T(0));
+      }
+    }
+  }
+}
+
 // Unified, inline tracing helper for layout/stride information used by
 // multiple algorithms. Guarded by EIGFFT_TRACE_LAYOUT so it can be
 // enabled in one place to produce consistent prints for different kernels.
@@ -1441,6 +1687,11 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   validate_fft_axis(P, layout);
   const detail::TwiddleMetadataWriter<T> metadata(layout, stages);
   metadata.record_plan_twiddles(P);
+  const detail::OmegaMetadataWriter<T> omega(layout, static_cast<std::size_t>(N));
+  omega.fill(P);
+
+  // Pre-butterfly transform hook (e.g., R2C imag clear)
+  detail::apply_pre_transform(P, layout);
   const detail::LayoutMetadataWriter<T> layout_writer(layout, static_cast<std::size_t>(N));
   if (layout_writer.enabled()) {
     // Cooley–Tukey kernel produces output in natural order because it
@@ -1464,9 +1715,12 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   int B, threads, lane_cols, active_lane_cols;
   Eigen::Index axis_stride, batch_stride;
   prepare_plan_workspace(P, layout, B, threads, active_lane_cols, lane_cols, axis_stride, batch_stride);
-  const bool parallel_enabled = P.use_threads && threads > 1;
+  const detail::StageSnapshotAllWriter<T> snap_all(layout, static_cast<std::size_t>(N), stages, B);
+  const detail::ButterflyPairsAllWriter<T> pairs_all(layout, static_cast<std::size_t>(N), stages, B);
+  const detail::TwiddleIndexAllWriter<T> twmap_all(layout, static_cast<std::size_t>(N), stages, B);
+  const int workspace_threads = std::max(1, P.workspace.threads);
 
-  const int invariant_slots = std::max(1, threads);
+  const int invariant_slots = workspace_threads;
   std::vector<std::complex<T>> invariant_scratch;
   if (invariant.enabled() && stages > 0) {
     invariant_scratch.assign(static_cast<size_t>(invariant_slots) * static_cast<size_t>(stages),
@@ -1481,22 +1735,16 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
 #if EIGFFT_TIMING
   timing_internal::ScopedTimer __t_pre_permute(timing_internal::Bin::PreButterfly);
 #endif
-  bool permuted_in_parallel = false;
-#ifdef _OPENMP
-  if (parallel_enabled) {
-    permuted_in_parallel = true;
-#pragma omp parallel num_threads(threads)
-    {
-      const int tid = omp_get_thread_num();
-      Complex** columns = P.workspace.column_row(tid);
-#pragma omp for schedule(static)
-      for (int chunk = 0; chunk < chunk_count; ++chunk) {
-        const int col = chunk * active_lane_cols;
+  {
+    auto permute_fn = [&](size_t start, size_t end, int /*worker_id*/) {
+      std::vector<Complex*> columns(static_cast<size_t>(active_lane_cols));
+      for (size_t chunk = start; chunk < end; ++chunk) {
+        const int col = static_cast<int>(chunk) * active_lane_cols;
         const int width = std::min(active_lane_cols, B - col);
         if (width <= 0) continue;
         for (int lane = 0; lane < width; ++lane) {
           const Eigen::Index batch_index = Eigen::Index(col + lane);
-          columns[lane] = layout.base + batch_index * batch_stride;
+          columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
         }
         for (int i = 0; i < N; ++i) {
           const int src = bitrev[i];
@@ -1504,35 +1752,13 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
           const Eigen::Index dst_offset = Eigen::Index(i) * axis_stride;
           const Eigen::Index src_offset = Eigen::Index(src) * axis_stride;
           for (int lane = 0; lane < width; ++lane) {
-            Complex* column_ptr = columns[lane];
+            Complex* column_ptr = columns[static_cast<size_t>(lane)];
             std::swap(column_ptr[dst_offset], column_ptr[src_offset]);
           }
         }
       }
-    }
-  }
-#endif
-  if (!permuted_in_parallel) {
-    Complex** columns = P.workspace.column_row(0);
-    for (int chunk = 0; chunk < chunk_count; ++chunk) {
-      const int col = chunk * active_lane_cols;
-      const int width = std::min(active_lane_cols, B - col);
-      if (width <= 0) continue;
-      for (int lane = 0; lane < width; ++lane) {
-        const Eigen::Index batch_index = Eigen::Index(col + lane);
-          columns[lane] = layout.base + batch_index * batch_stride;
-      }
-      for (int i = 0; i < N; ++i) {
-        const int src = bitrev[i];
-        if (src <= i) continue;
-        const Eigen::Index dst_offset = Eigen::Index(i) * axis_stride;
-        const Eigen::Index src_offset = Eigen::Index(src) * axis_stride;
-        for (int lane = 0; lane < width; ++lane) {
-            Complex* column_ptr = columns[lane];
-          std::swap(column_ptr[dst_offset], column_ptr[src_offset]);
-        }
-      }
-    }
+    };
+    P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, permute_fn);
   }
 
   
@@ -1540,87 +1766,92 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   timing_internal::ScopedTimer __t_butterfly(timing_internal::Bin::ButterflyStage);
 #endif
   for (int len = 2, stage_idx = 0; len <= N; len <<= 1, ++stage_idx) {
-  const int half = len >> 1;
-  const int step = N / len;
-  const int blocks = N / len;
-  if (params.enabled()) params.set(stage_idx, len, step);
+    const int half = len >> 1;
+    const int step = N / len;
+    const int blocks = N / len;
+    if (params.enabled()) params.set(stage_idx, len, step);
 
-    bool butterflies_in_parallel = false;
-#ifdef _OPENMP
-    if (parallel_enabled) {
-      butterflies_in_parallel = true;
-#pragma omp parallel num_threads(threads)
-      {
-        const int tid = omp_get_thread_num();
-        Complex* a_ptr = P.workspace.row_a(tid);
-        Complex* b_ptr = P.workspace.row_b(tid);
-        Complex** columns = P.workspace.column_row(tid);
-        std::complex<T>* invariant_local = nullptr;
-        if (!invariant_scratch.empty()) {
-          invariant_local = invariant_scratch.data() + static_cast<size_t>(tid) * static_cast<size_t>(stages);
+    const bool dispatcher_inline = (P.dispatcher() == &InlineDispatcher::instance());
+    std::complex<T>* invariant_global = (!invariant_scratch.empty() && dispatcher_inline)
+                                            ? invariant_scratch.data()
+                                            : nullptr;
+    const bool capture_snap_all = snap_all.enabled();
+    const bool capture_snap_single = snap.enabled();
+    const bool capture_pairs_all = pairs_all.enabled();
+    const bool capture_pairs_single = pairs.enabled();
+    const bool capture_twmap_all = twmap_all.enabled();
+    const bool capture_twmap_single = twmap.enabled();
+
+    auto stage_chunk = [&](size_t start, size_t end, int /*worker_id*/) {
+      std::vector<Complex*> columns(static_cast<size_t>(active_lane_cols));
+      std::vector<Complex> a_buf(static_cast<size_t>(active_lane_cols));
+      std::vector<Complex> b_buf(static_cast<size_t>(active_lane_cols));
+      std::vector<Complex> a_orig(static_cast<size_t>(active_lane_cols));
+      std::vector<Complex> b_orig(static_cast<size_t>(active_lane_cols));
+      std::complex<T>* invariant_local = invariant_global;
+      for (size_t chunk = start; chunk < end; ++chunk) {
+        const int col = static_cast<int>(chunk) * active_lane_cols;
+        const int width = std::min(active_lane_cols, B - col);
+        if (width <= 0) continue;
+        for (int lane = 0; lane < width; ++lane) {
+          const Eigen::Index batch_index = Eigen::Index(col + lane);
+          columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
         }
-        std::vector<Complex> a_in_local(static_cast<size_t>(active_lane_cols));
-        std::vector<Complex> b_in_local(static_cast<size_t>(active_lane_cols));
-        const int work_items = half * blocks * chunk_count;
-        if (work_items > 0) {
-#pragma omp for schedule(static)
-          for (int item = 0; item < work_items; ++item) {
-            int tmp = item;
-            const int chunk = tmp % chunk_count;
-            tmp /= chunk_count;
-            const int block = tmp % blocks;
-            const int k = tmp / blocks;
-            const int col = chunk * active_lane_cols;
-            const int width = std::min(active_lane_cols, B - col);
-            if (width <= 0) continue;
-            for (int lane = 0; lane < width; ++lane) {
-              const Eigen::Index batch_index = Eigen::Index(col + lane);
-              columns[lane] = layout.base + batch_index * batch_stride;
-            }
-            const int a_index = block * len + k;
+        for (int k = 0; k < half; ++k) {
+          const Complex w = P.W[k * step];
+          for (int block = 0; block < blocks; ++block) {
+            const int base = block * len;
+            const int a_index = base + k;
             const int b_index = a_index + half;
             const Eigen::Index a_offset = Eigen::Index(a_index) * axis_stride;
             const Eigen::Index b_offset = Eigen::Index(b_index) * axis_stride;
-            const Complex w = P.W[k * step];
             for (int lane = 0; lane < width; ++lane) {
-              Complex* column_ptr = columns[lane];
-              a_ptr[lane] = column_ptr[a_offset];
-              b_ptr[lane] = column_ptr[b_offset];
-              if (!a_in_local.empty()) {
-                a_in_local[static_cast<size_t>(lane)] = a_ptr[lane];
-                b_in_local[static_cast<size_t>(lane)] = b_ptr[lane];
-              }
+              Complex* column_ptr = columns[static_cast<size_t>(lane)];
+              const Complex val_a = column_ptr[a_offset];
+              const Complex val_b = column_ptr[b_offset];
+              a_orig[static_cast<size_t>(lane)] = val_a;
+              b_orig[static_cast<size_t>(lane)] = val_b;
+              a_buf[static_cast<size_t>(lane)] = val_a;
+              b_buf[static_cast<size_t>(lane)] = val_b;
             }
-            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_cooleytukey);
+            detail::ButterflyKernel<T>::apply(a_buf.data(), b_buf.data(), width, w, &P.butterfly_default_cooleytukey);
             T local_max_r0 = invariant_local ? invariant_local[stage_idx].real() : T(0);
             T local_max_e = invariant_local ? invariant_local[stage_idx].imag() : T(0);
+            const int tw_index = k * step;
             for (int lane = 0; lane < width; ++lane) {
-              Complex* column_ptr = columns[lane];
-              const Complex y0 = a_ptr[lane];
-              const Complex y1 = b_ptr[lane];
+              Complex* column_ptr = columns[static_cast<size_t>(lane)];
+              const Complex y0 = a_buf[static_cast<size_t>(lane)];
+              const Complex y1 = b_buf[static_cast<size_t>(lane)];
               column_ptr[a_offset] = y0;
               column_ptr[b_offset] = y1;
               const int batch_index = col + lane;
-              if (snap.enabled() && batch_index == 0) {
+              if (capture_snap_all) {
+                snap_all.set(stage_idx, a_index, batch_index, y0);
+                snap_all.set(stage_idx, b_index, batch_index, y1);
+              } else if (capture_snap_single && batch_index == 0) {
                 snap.set(stage_idx, a_index, y0);
                 snap.set(stage_idx, b_index, y1);
-                if (twmap.enabled()) {
-                  const int tw_index = k * step;
-                  twmap.set(stage_idx, a_index, tw_index);
-                  twmap.set(stage_idx, b_index, tw_index);
-                }
+              }
+              if (capture_twmap_all) {
+                twmap_all.set(stage_idx, a_index, batch_index, tw_index);
+                twmap_all.set(stage_idx, b_index, batch_index, tw_index);
+              } else if (capture_twmap_single && batch_index == 0) {
+                twmap.set(stage_idx, a_index, tw_index);
+                twmap.set(stage_idx, b_index, tw_index);
               }
               if (invariant_local) {
-                const Complex a_in = a_in_local.empty() ? Complex{} : a_in_local[static_cast<size_t>(lane)];
-                const Complex b_in = b_in_local.empty() ? Complex{} : b_in_local[static_cast<size_t>(lane)];
+                const Complex a_in = a_orig[static_cast<size_t>(lane)];
+                const Complex b_in = b_orig[static_cast<size_t>(lane)];
                 const T r0 = std::abs((y0 + y1) - T(2) * a_in);
-                const T e = (std::norm(y0) + std::norm(y1)) -
-                            T(2) * (std::norm(a_in) + std::norm(b_in));
+                const T e = (std::norm(y0) + std::norm(y1)) - T(2) * (std::norm(a_in) + std::norm(b_in));
                 const T abs_e = std::abs(e);
                 if (r0 > local_max_r0) local_max_r0 = r0;
                 if (abs_e > local_max_e) local_max_e = abs_e;
               }
-              if (pairs.enabled() && batch_index == 0) {
+              if (capture_pairs_all) {
+                pairs_all.set(stage_idx, a_index, batch_index, a_index, b_index);
+                pairs_all.set(stage_idx, b_index, batch_index, a_index, b_index);
+              } else if (capture_pairs_single && batch_index == 0) {
                 pairs.set(stage_idx, a_index, a_index, b_index);
                 pairs.set(stage_idx, b_index, a_index, b_index);
               }
@@ -1631,83 +1862,9 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
           }
         }
       }
-    }
-#endif
-    if (!butterflies_in_parallel) {
-      Complex* a_ptr = P.workspace.row_a(0);
-      Complex* b_ptr = P.workspace.row_b(0);
-      Complex** columns = P.workspace.column_row(0);
-      std::complex<T>* invariant_local = invariant_scratch.empty() ? nullptr : invariant_scratch.data();
-      for (int k = 0; k < half; ++k) {
-        const Complex w = P.W[k * step];
-        for (int block = 0; block < blocks; ++block) {
-          const int base = block * len;
-          const int a_index = base + k;
-          const int b_index = a_index + half;
-          const Eigen::Index a_offset = Eigen::Index(a_index) * axis_stride;
-          const Eigen::Index b_offset = Eigen::Index(b_index) * axis_stride;
-          for (int chunk = 0; chunk < chunk_count; ++chunk) {
-            const int col = chunk * active_lane_cols;
-            const int width = std::min(active_lane_cols, B - col);
-            if (width <= 0) continue;
-            std::vector<Complex> a_in_local(static_cast<size_t>(width));
-            std::vector<Complex> b_in_local(static_cast<size_t>(width));
-            for (int lane = 0; lane < width; ++lane) {
-              const Eigen::Index batch_index = Eigen::Index(col + lane);
-              columns[lane] = layout.base + batch_index * batch_stride;
-            }
-            for (int lane = 0; lane < width; ++lane) {
-              Complex* column_ptr = columns[lane];
-              a_ptr[lane] = column_ptr[a_offset];
-              b_ptr[lane] = column_ptr[b_offset];
-              a_in_local[static_cast<size_t>(lane)] = a_ptr[lane];
-              b_in_local[static_cast<size_t>(lane)] = b_ptr[lane];
-            }
-            detail::ButterflyKernel<T>::apply(a_ptr, b_ptr, width, w, &P.butterfly_default_cooleytukey);
-            T local_max_r0 = invariant_local ? invariant_local[stage_idx].real() : T(0);
-            T local_max_e = invariant_local ? invariant_local[stage_idx].imag() : T(0);
-            for (int lane = 0; lane < width; ++lane) {
-              Complex* column_ptr = columns[lane];
-              const Complex y0 = a_ptr[lane];
-              const Complex y1 = b_ptr[lane];
-              column_ptr[a_offset] = y0;
-              column_ptr[b_offset] = y1;
-              const int batch_index = col + lane;
-              if (snap.enabled() && batch_index == 0) {
-                snap.set(stage_idx, a_index, y0);
-                snap.set(stage_idx, b_index, y1);
-                if (twmap.enabled()) {
-                  const int tw_index = k * step;
-                  twmap.set(stage_idx, a_index, tw_index);
-                  twmap.set(stage_idx, b_index, tw_index);
-                }
-              }
-              if (invariant_local) {
-                const Complex a_in = a_in_local[static_cast<size_t>(lane)];
-                const Complex b_in = b_in_local[static_cast<size_t>(lane)];
-                const T r0 = std::abs((y0 + y1) - T(2) * a_in);
-                const T e = (std::norm(y0) + std::norm(y1)) -
-                            T(2) * (std::norm(a_in) + std::norm(b_in));
-                const T abs_e = std::abs(e);
-                if (r0 > local_max_r0) local_max_r0 = r0;
-                if (abs_e > local_max_e) local_max_e = abs_e;
-              }
-              if (pairs.enabled() && batch_index == 0) {
-                pairs.set(stage_idx, a_index, a_index, b_index);
-                pairs.set(stage_idx, b_index, a_index, b_index);
-              }
-            }
-            if (invariant_local) {
-              invariant_local[stage_idx] = std::complex<T>(local_max_r0, local_max_e);
-            }
-          }
-        }
-      }
-    }
-    // Cooley–Tukey snapshots, pair records, twiddle-index, and invariants are captured at write-time above.
-    if (invariant.enabled()) {
-      // Nothing to do here because we updated per-write into the buffer; keep for clarity.
-    }
+    };
+    P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, stage_chunk);
+    // Per-stage metadata and snapshots are captured at write-time above.
   }
 
   if (!invariant_scratch.empty()) {
@@ -1737,6 +1894,8 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
       }
     }
   }
+  // Post-butterfly transform hook (e.g., C2R imag clear or magnitude reduction)
+  detail::apply_post_transform(P, layout);
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);
 }
 
@@ -1958,7 +2117,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
 #if EIGFFT_TRACE_STOCKHAM
   std::cout << "[stockham] dispatch=" << dispatch_id
             << " desired_threads=" << desired_threads
-            << " pool_size=" << state->pool.size()
+            << " dispatcher_threads=" << workspace_threads
             << " lane_cols=" << lane_cols
             << " lane_capacity=" << lane_capacity
             << " axis_stride=" << axis_stride
@@ -1998,16 +2157,16 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
   #if EIGFFT_TRACE_STOCKHAM
     if (start == 0 && worker_id == 0) {
       std::cout << "[stockham] first chunk width=" << width
-                << " threads=" << state->pool.size()
+                << " threads=" << workspace_threads
                 << " lane_capacity=" << lane_capacity << std::endl;
     }
-    #endif
+#endif
     size_t slot = static_cast<size_t>(worker_id);
     if (slot >= static_cast<size_t>(state->arena.stockham_thread_capacity)) {
       std::ostringstream oss;
       oss << "Stockham worker slot exceeds arena thread capacity: worker_id=" << worker_id
           << " capacity=" << state->arena.stockham_thread_capacity
-          << " pool=" << state->pool.size();
+          << " threads=" << workspace_threads;
       throw std::runtime_error(oss.str());
     }
   const size_t lane_stride = static_cast<size_t>(lane_capacity);
@@ -2205,7 +2364,8 @@ const Complex* src = final_buf + i * lane_capacity;
     #endif
   };
 
-  state->pool.parallel_for(static_cast<size_t>(B), static_cast<size_t>(lane_cols), process_chunk);
+  // Use the plan dispatcher to optionally parallelize across frames; default runs inline.
+  P.dispatcher()->parallel_for(static_cast<size_t>(B), static_cast<size_t>(lane_cols), process_chunk);
 
 #if EIGFFT_TRACE_STOCKHAM
   std::cout << "[stockham] dispatch=" << dispatch_id << " parallel_for complete" << std::endl;
@@ -2223,7 +2383,8 @@ const Complex* src = final_buf + i * lane_capacity;
       invariant.set(stage, max_r0, max_e);
     }
   }
-
+  // Post-butterfly transform hook (e.g., C2R imag clear or magnitude reduction)
+  detail::apply_post_transform(P, layout);
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(false);
 }
 

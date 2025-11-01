@@ -1,5 +1,6 @@
 #include "eigen_fft.hpp"
 #include "plan_support.hpp"
+#include <memory>
 
 #include <Eigen/Core>
 
@@ -18,6 +19,19 @@
 #include <vector>
 
 namespace {
+
+// Local dispatcher that forwards to an eigfft::WorkerPool when available.
+struct PoolDispatcherLocal : public eigfft::JobDispatcher {
+  eigfft::WorkerPool* pool = nullptr;
+  void parallel_for(size_t total, size_t chunk, const Fn& fn) override {
+    if (!pool || total == 0) {
+      eigfft::InlineDispatcher::instance().parallel_for(total, chunk, fn);
+      return;
+    }
+    pool->parallel_for(total, chunk, fn);
+  }
+};
+
 
 static void dump_simd_caps() {
   std::cout << "Pointer size: " << (8 * sizeof(void*)) << "-bit" << std::endl;
@@ -111,7 +125,7 @@ template <typename Scalar>
 void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& opts,
                              const eigfft::PlanRuntimeConfig& runtime_cfg, bool batched,
                              int window_size, int stride_size, eigfft::KernelKind kernel_kind,
-                             const char* kernel_label) {
+                             const char* kernel_label, eigfft::JobDispatcher* dispatcher = nullptr) {
   if (!opts.enabled) return;
 
   using Complex = std::complex<Scalar>;
@@ -159,6 +173,16 @@ void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& op
   const int packet_guess = std::max(1, static_cast<int>(Eigen::internal::packet_traits<std::complex<Scalar>>::size));
   env_cfg.lanes = std::max(env_cfg.lanes, packet_guess);
   plan_env.initialize(window, /*inverse=*/false, env_cfg);
+  if (dispatcher) {
+    try {
+      plan_env.plan().set_dispatcher(dispatcher);
+    } catch (...) {
+      // best-effort: do not make the realtime probe fail if dispatcher cannot be installed
+    }
+  }
+  // If an outer dispatcher was provided via runtime_cfg.threads > 1, the
+  // caller may have created a WorkerPool and expects plans to dispatch to it.
+  // The example creates and installs a dispatcher where appropriate in main().
   auto ensure_lane_capacity = [&](int required_lanes) {
     const int needed = std::max(1, required_lanes);
     if (needed > plan_env.lanes()) {
@@ -283,7 +307,8 @@ void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& op
 
 template <typename Scalar>
 void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt_opts,
-                             const eigfft::PlanRuntimeConfig& runtime_cfg) {
+                             const eigfft::PlanRuntimeConfig& runtime_cfg,
+                             eigfft::JobDispatcher* dispatcher = nullptr) {
   using Complex = std::complex<Scalar>;
   using MatrixXc = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
 
@@ -316,8 +341,9 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
       const auto start = std::chrono::high_resolution_clock::now();
       // Build a fresh, single-use plan each repeat to avoid any buffer/arena reuse.
       // NOTE: For real applications, use PlanCache instead for efficient reuse!
-      env.initialize(static_cast<int>(work.rows()), cfg.inverse, cfg.runtime);
-      auto& one_shot_plan = env.plan();
+  env.initialize(static_cast<int>(work.rows()), cfg.inverse, cfg.runtime);
+  if (dispatcher) { try { env.plan().set_dispatcher(dispatcher); } catch(...) {} }
+  auto& one_shot_plan = env.plan();
       eigfft::fft_inplace_batched<Scalar>(work, one_shot_plan);
       env.discard_plan();
       const auto end = std::chrono::high_resolution_clock::now();
@@ -353,6 +379,9 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
         BenchmarkConfig cfg = {runtime_cfg, lanes, false};
         eigfft::PlanEnvironment<Scalar> temp_env;
         temp_env.initialize(task.N, cfg.inverse, cfg.runtime);
+        if (dispatcher) {
+          try { temp_env.plan().set_dispatcher(dispatcher); } catch(...) {}
+        }
         auto& temp_plan = temp_env.plan();
         const int initial_packets = temp_plan.packet_cols;
         const int desired_lanes = (cfg.lanes.packet_step == 0) ? initial_packets : cfg.lanes.packet_step;
@@ -373,9 +402,10 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
           std::cout << "    " << cfg.lanes.label << ": unavailable (kernel unsupported)" << std::endl;
           continue;
         }
-        eigfft::PlanEnvironment<Scalar> plan_env;
-        plan_env.discard_plan();
-        const double elapsed = run_plan(seed, plan_env, cfg, task.repeats);
+  eigfft::PlanEnvironment<Scalar> plan_env;
+  plan_env.discard_plan();
+  // run_plan will install dispatcher on its created plan instance
+  const double elapsed = run_plan(seed, plan_env, cfg, task.repeats);
         const int lanes_used = (cfg.lanes.packet_step > 0) ? std::min(cfg.lanes.packet_step, plan_env.lanes()) : plan_env.lanes();
         const int max_threads = plan_env.threads();
 
@@ -414,6 +444,7 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
 
   eigfft::PlanEnvironment<Scalar> probe_env;
   probe_env.initialize(256, /*inverse=*/false, runtime_cfg);
+  if (dispatcher) { try { probe_env.plan().set_dispatcher(dispatcher); } catch(...) {} }
   auto& probe_plan = probe_env.plan();
   std::cout << "\nHand-rolled Cooley-Tukey kernel uses Eigen packets (packet_cols="
             << probe_plan.packet_cols
@@ -421,11 +452,11 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
 
   // Run realtime simulations with different configurations
   std::vector<int> window_sizes = {1024, 64, 32};
-  for (const auto& algo : kAlgorithms) {
+    for (const auto& algo : kAlgorithms) {
     for (int win : window_sizes) {
       int str = win / 2;  // stride = window / 2 for 50% overlap
-      run_realtime_simulation<Scalar>(seed_rng, rt_opts, runtime_cfg, /*batched=*/false, win, str, algo.kind, algo.label);
-      run_realtime_simulation<Scalar>(seed_rng, rt_opts, runtime_cfg, /*batched=*/true, win, str, algo.kind, algo.label);
+      run_realtime_simulation<Scalar>(seed_rng, rt_opts, runtime_cfg, /*batched=*/false, win, str, algo.kind, algo.label, dispatcher);
+      run_realtime_simulation<Scalar>(seed_rng, rt_opts, runtime_cfg, /*batched=*/true, win, str, algo.kind, algo.label, dispatcher);
     }
   }
 #if EIGFFT_TIMING
@@ -564,11 +595,25 @@ int main(int argc, char** argv) {
 
     std::mt19937_64 seed_rng(1337);
 
+    // Create a WorkerPool and dispatcher for the example to demonstrate
+    // outer parallel dispatch when runtime_cfg.threads > 1.
+    PoolDispatcherLocal local_dispatcher;
+    std::unique_ptr<eigfft::WorkerPool> local_pool;
+    if (runtime_cfg.threads > 1) {
+      try {
+        local_pool = std::make_unique<eigfft::WorkerPool>(runtime_cfg.threads);
+        local_dispatcher.pool = local_pool.get();
+      } catch (...) {
+        local_pool.reset();
+        local_dispatcher.pool = nullptr;
+      }
+    }
+
     if (requested.count("f64")) {
-      run_suite_for_precision<double>(seed_rng, realtime_opts, runtime_cfg);
+      run_suite_for_precision<double>(seed_rng, realtime_opts, runtime_cfg, (local_dispatcher.pool ? &local_dispatcher : nullptr));
     }
     if (requested.count("f32")) {
-      run_suite_for_precision<float>(seed_rng, realtime_opts, runtime_cfg);
+      run_suite_for_precision<float>(seed_rng, realtime_opts, runtime_cfg, (local_dispatcher.pool ? &local_dispatcher : nullptr));
     }
 
     return 0;

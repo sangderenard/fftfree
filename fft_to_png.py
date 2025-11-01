@@ -24,7 +24,41 @@ void* fft_init(size_t n,
                int lanes,
                int inverse,
                int kernel,
+               int radix,
+               const int* radix_pattern,
+               size_t radix_pattern_len,
                int pad_mode);
+void* fft_init_ex(size_t n,
+                  int threads,
+                  int lanes,
+                  int inverse,
+                  int kernel,
+                  int radix,
+                  const int* radix_pattern,
+                  size_t radix_pattern_len,
+                  int pad_mode,
+                  int window,
+                  int hop,
+                  int stft_mode);
+void* fft_init_full(size_t n,
+                    int threads,
+                    int lanes,
+                    int inverse,
+                    int kernel,
+                    int radix,
+                    const int* radix_pattern,
+                    size_t radix_pattern_len,
+                    int pad_mode,
+                    int window,
+                    int hop,
+                    int stft_mode,
+                    int transform,
+                    int reduce_magnitude,
+                    int store_polar,
+                    int half_spectrum,
+                    int allow_outer_parallel,
+                    int allow_inner_parallel,
+                    int inner_threads);
 int fft_execute(void* handle,
                 const float* in_pcm,
                 float* out_real,
@@ -32,7 +66,17 @@ int fft_execute(void* handle,
                 float* out_mag,
                 size_t n);
 size_t fft_ctx_size(void* handle);
+size_t fft_ctx_worker_threads(void* handle);
+size_t fft_ctx_effective_threads(void* handle);
 void fft_free(void* handle);
+size_t fft_execute_batched(void* handle,
+                           const float* pcm,
+                           size_t pcm_len,
+                           float* out_real,
+                           float* out_imag,
+                           float* out_mag,
+                           int pad_mode,
+                           size_t max_frames);
 """
 )
 
@@ -168,36 +212,123 @@ def main() -> None:
         kernel_code = {"auto": 0, "ct": 1, "stockham": 2}[args.kernel]
         pad_code = {"auto": 0, "always": 1, "never": 2}[args.pad]
 
-        # Use the simplified deployment API: init -> execute -> free
-        ctx = lib.fft_init(n, args.threads, args.lanes, 0, kernel_code, pad_code)
+        # Use STFT batched helper: create a plan with N=1024 bins and window/hop
+        STFT_N = 1024
+        STFT_W = 1024
+        STFT_H = 512
+        # Prefer the full initializer (creates worker pool when requested) while
+        # preserving the STFT/window/hop behavior from fft_init_ex. Fall back to
+        # fft_init_ex when the shared library doesn't export the full API.
+        init_full = getattr(lib, "fft_init_full", None)
+        if init_full is not None:
+            # Parameters: n, threads, lanes, inverse, kernel, radix, radix_pattern, radix_pattern_len,
+            # pad_mode, window, hop, stft_mode,
+            # transform, reduce_magnitude, store_polar, half_spectrum,
+            # allow_outer_parallel, allow_inner_parallel, inner_threads
+            ctx = init_full(
+                STFT_N,
+                args.threads,
+                args.lanes,
+                0,              # inverse
+                kernel_code,
+                0,              # radix (unspecified)
+                ffi.NULL,
+                0,              # radix_pattern_len
+                pad_code,
+                STFT_W,
+                STFT_H,
+                1,              # stft_mode
+                0,              # transform (C2C)
+                0,              # reduce_magnitude
+                0,              # store_polar
+                0,              # half_spectrum
+                1,              # allow_outer_parallel -> create WorkerPool
+                0,              # allow_inner_parallel
+                0               # inner_threads
+            )
+        else:
+            # Older/shared libs may not export fft_init_full; keep previous behavior.
+            ctx = lib.fft_init_ex(STFT_N, args.threads, args.lanes, 0, kernel_code, 0, ffi.NULL, 0, pad_code, STFT_W, STFT_H, 1)
         if ctx == ffi.NULL:
-            print("ERROR: fft_init failed (ensure N is power-of-two and library is built correctly)")
+            print("ERROR: fft_init_ex failed (ensure N is power-of-two and library is built correctly)")
             return
+        worker_threads = int(lib.fft_ctx_worker_threads(ctx))
+        effective_threads = int(lib.fft_ctx_effective_threads(ctx))
+        if worker_threads <= 0:
+            worker_threads = 1
+        if effective_threads <= 0:
+            effective_threads = 1
+        if worker_threads <= 1 or effective_threads <= 1:
+            print(
+                f"WARNING: FFT context running single-threaded "
+                f"(worker_threads={worker_threads}, effective_threads={effective_threads})."
+            )
+        else:
+            print(
+                f"FFT context using {worker_threads} worker threads "
+                f"(effective plan threads={effective_threads})."
+            )
+        # Estimate expected frames so we can allocate outputs. Use same logic as C helper.
+        pcm_len = int(data.shape[0])
+        W = STFT_W
+        H = STFT_H
+        if pcm_len < W:
+            if pad_code == 1:
+                frames = 1
+            else:
+                print("ERROR: input shorter than window and pad policy forbids padding")
+                lib.fft_free(ctx)
+                return
+        else:
+            frames = 1 + (pcm_len - W) // H
+            last_start = (frames - 1) * H
+            remaining = pcm_len - last_start if pcm_len > last_start else 0
+            if remaining < W:
+                if pad_code == 1:
+                    pass
+                elif pad_code == 2:
+                    if frames > 0:
+                        frames -= 1
+                else:
+                    print("ERROR: trailing partial frame and pad_mode=auto refuses padding")
+                    lib.fft_free(ctx)
+                    return
+
+        if frames <= 0:
+            print("ERROR: No frames to process")
+            lib.fft_free(ctx)
+            return
+
         plan_n = lib.fft_ctx_size(ctx)
         if plan_n == 0:
             print("ERROR: fft_ctx_size returned 0")
             lib.fft_free(ctx)
             return
-        if plan_n != n and args.pad != "always":
-            print(f"Padding (library): extended {n} -> {plan_n} samples to satisfy kernel constraints.")
-        n_eff = int(plan_n)
+        if plan_n != STFT_N and args.pad != "always":
+            print(f"Padding (library): plan N adjusted {STFT_N} -> {plan_n}")
 
-        # Allocate output buffers sized to plan
-        out_real = np.zeros(n_eff, dtype=np.float32)
-        out_imag = np.zeros(n_eff, dtype=np.float32)
-        out_mag = np.zeros(n_eff, dtype=np.float32)
+        N_eff = int(plan_n)
+        # allocate flattened output buffers: frames * N
+        out_count = frames * N_eff
+        out_real = np.zeros(out_count, dtype=np.float32)
+        out_imag = np.zeros(out_count, dtype=np.float32)
+        out_mag = np.zeros(out_count, dtype=np.float32)
+
         try:
-            ok = lib.fft_execute(
+            produced = lib.fft_execute_batched(
                 ctx,
                 ffi.cast("float *", data.ctypes.data),
+                pcm_len,
                 ffi.cast("float *", out_real.ctypes.data),
                 ffi.cast("float *", out_imag.ctypes.data),
                 ffi.cast("float *", out_mag.ctypes.data),
-                orig_n if args.pad != "always" else n,
+                pad_code,
+                0,
             )
-            if ok == 0:
-                print("ERROR: fft_execute failed")
+            if produced == 0:
+                print("ERROR: fft_execute_batched failed or produced 0 frames")
                 return
+            frames = int(produced)
         finally:
             lib.fft_free(ctx)
 
@@ -253,16 +384,22 @@ def main() -> None:
             imag_img = norm(out_imag)
             mag_img = norm(out_mag)
 
-            # Stack into RGB image
-            length = len(real_img)
-            img = np.stack([real_img, imag_img, mag_img], axis=1)
-            side = int(np.ceil(np.sqrt(length)))
-            padded = np.zeros((side * side, 3), dtype=np.uint8)
-            padded[:length] = img
-            img2d = padded.reshape((side, side, 3))
+            # Try to reshape into (frames, N) then transpose to (N, frames)
+            # so the vertical axis represents frequency bins (N=1024).
+            try:
+                real_mat = real_img.reshape((frames, N_eff)).T
+                imag_mat = imag_img.reshape((frames, N_eff)).T
+                mag_mat = mag_img.reshape((frames, N_eff)).T
+            except Exception as ex:
+                # No fallbacks: fail loudly so caller can fix parameters/output sizing.
+                print(f"ERROR: unable to reshape STFT outputs to (frames={frames}, N={N_eff}): {ex}")
+                lib.fft_free(ctx)
+                return
 
+            # Stack into RGB image with shape (N, frames, 3)
+            img2d = np.stack([real_mat, imag_mat, mag_mat], axis=2)
             Image.fromarray(img2d, "RGB").save(args.output)
-            print(f"Saved FFT image to {args.output} using {lib_path}")
+            print(f"Saved FFT image to {args.output} using {lib_path} with shape {img2d.shape}")
         else:
             print("Image generation disabled (--no-image)")
     except Exception as e:

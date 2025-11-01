@@ -21,6 +21,7 @@
 #include <map>
 #include <tuple>
 #include <sstream>
+#include <thread>
 
 namespace {
 
@@ -223,7 +224,12 @@ bool test_effective_threads_reports_parallel() {
   eigfft::PlanRuntimeConfig cfg = default_runtime_config<Scalar>();
   eigfft::PlanCache<Scalar> cache;
   auto token = cache.get_plan(32, /*inverse=*/false, cfg);
-  return token.plan().effective_threads(64) >= 2;
+  int hw = static_cast<int>(std::thread::hardware_concurrency());
+  if (hw <= 0) hw = 1;
+  const int clamped_cfg_threads =
+      std::clamp(cfg.threads, 1, eigfft::Plan<Scalar>::Limits::kCompileTimeMaxThreads);
+  const int expected = std::max(1, std::min(clamped_cfg_threads, hw));
+  return token.plan().effective_threads(64) == expected;
 }
 
 template <typename Scalar>

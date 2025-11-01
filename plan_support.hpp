@@ -20,6 +20,23 @@ struct PlanRuntimeConfig {
   int lanes = 2;
   std::size_t transpose_capacity = 0;
   bool inverse = false;
+  // Outer-API requested radix. 0 means "unspecified by caller".
+  // If non-zero, this value will be applied to Plan::butterfly_default_* before
+  // plan allocation so the caller-specified radix drives internal configuration.
+  int radix = 0;
+  // Optional mixed-radix pattern supplied by the outer API. Values are raw
+  // integer radices (e.g., 2,4). If empty, no pattern was provided.
+  std::vector<int> radix_pattern;
+  // Transform selection and optional magnitude reduction hook control.
+  // transform: 0=C2C, 1=R2C, 2=C2R, 3=R2R
+  int transform = 0;
+  bool reduce_magnitude = false;
+  bool store_polar = false; // if true and reduce_magnitude, store (mag,phase) interleaved
+  bool half_spectrum = false; // half-spectrum packing for R2C/C2R (first N/2+1 bins)
+  // Threading policy: outer vs inner
+  bool allow_outer_parallel = true;   // if false, do not create outer worker pool
+  bool allow_inner_parallel = false;  // if true and outer threads == 1, kernels may use inner threads
+  int inner_threads = 0;              // desired inner thread count when allowed (<=0 => auto)
 };
 
 template <class Scalar>
@@ -41,7 +58,27 @@ class PlanEnvironment {
     const int max_lanes = Plan<Scalar>::Limits::compile_time_max_lane_capacity();
     const int clamped_lanes = std::clamp(cfg.lanes, 1, max_lanes);
 
-    const auto shape = compute_plan_arena_shape<Scalar>(N, clamped_threads, clamped_lanes);
+    const bool use_inner_threads = cfg.allow_inner_parallel;
+    int requested_inner = 1;
+    if (use_inner_threads) {
+      if (cfg.inner_threads > 0) {
+        requested_inner = cfg.inner_threads;
+      } else {
+        int hw = static_cast<int>(std::thread::hardware_concurrency());
+        if (hw <= 0) hw = 1;
+        requested_inner = hw;
+      }
+      requested_inner = std::clamp(requested_inner, 1, clamped_threads);
+    }
+
+    const int plan_thread_budget =
+        std::max(clamped_threads, use_inner_threads ? requested_inner : 1);
+    const bool enable_plan_threads =
+        (cfg.allow_outer_parallel && plan_thread_budget > 1) ||
+        (use_inner_threads && plan_thread_budget > 1);
+
+    const auto shape =
+        compute_plan_arena_shape<Scalar>(N, plan_thread_budget, clamped_lanes);
 
     twiddles_.resize(shape.twiddles);
     bitrev_.resize(shape.bitrev);
@@ -61,17 +98,63 @@ class PlanEnvironment {
     arena_.baseline_a = baseline_a_.data();
     arena_.baseline_b = baseline_b_.data();
     arena_.baseline_columns = baseline_columns_.data();
-    arena_.baseline_thread_capacity = clamped_threads;
+    arena_.baseline_thread_capacity = plan_thread_budget;
     arena_.baseline_lane_capacity = clamped_lanes;
     arena_.stockham_ping = stockham_ping_.data();
     arena_.stockham_pong = stockham_pong_.data();
     arena_.stockham_lane_bases = stockham_lane_bases_.data();
-    arena_.stockham_thread_capacity = clamped_threads;
+    arena_.stockham_thread_capacity = plan_thread_budget;
     arena_.stockham_lane_capacity = clamped_lanes;
     arena_.nd_transpose = nd_transpose_.empty() ? nullptr : nd_transpose_.data();
     arena_.nd_transpose_capacity = nd_transpose_.size();
 
-    plan_ = std::make_unique<Plan<Scalar>>(N, arena_, inverse, true, clamped_threads);
+    plan_ = std::make_unique<Plan<Scalar>>(N, arena_, inverse, enable_plan_threads, plan_thread_budget);
+    // Apply transform mode and reduction settings
+    switch (cfg.transform) {
+      default:
+      case 0: plan_->transform_mode = Plan<Scalar>::TransformMode::C2C; break;
+      case 1: plan_->transform_mode = Plan<Scalar>::TransformMode::R2C; break;
+      case 2: plan_->transform_mode = Plan<Scalar>::TransformMode::C2R; break;
+      case 3: plan_->transform_mode = Plan<Scalar>::TransformMode::R2R; break;
+    }
+    plan_->reduce_magnitude = cfg.reduce_magnitude;
+    plan_->store_polar = cfg.store_polar;
+    plan_->half_spectrum = cfg.half_spectrum;
+    // If the runtime configuration requested a specific radix, apply it to
+    // the Plan's default butterfly configurations before the Plan is used.
+    if (cfg.radix != 0) {
+      // Map integer radix values to the enum used by the Plan/Butterfly code.
+      using BR = ButterflyRadix;
+      BR mapped = BR::Radix2;
+      switch (cfg.radix) {
+        case 2: mapped = BR::Radix2; break;
+        case 4: mapped = BR::Radix4; break;
+        case 8: mapped = BR::Radix8; break;
+        case 16: mapped = BR::Radix16; break;
+        default: mapped = BR::Radix2; break; // clamp unknown values to Radix2
+      }
+      plan_->butterfly_default_cooleytukey.radix = mapped;
+      plan_->butterfly_default_stockham.radix = mapped;
+      plan_->butterfly_default_external.radix = mapped;
+    }
+    // If the caller provided a mixed-radix pattern, copy it into the Plan so
+    // kernels can consult per-stage radix values. Unknown radices are
+    // clamped to Radix2.
+    if (!cfg.radix_pattern.empty()) {
+      plan_->radix_pattern.clear();
+      using BR = ButterflyRadix;
+      for (int r : cfg.radix_pattern) {
+        BR mapped_p = BR::Radix2;
+        switch (r) {
+          case 2: mapped_p = BR::Radix2; break;
+          case 4: mapped_p = BR::Radix4; break;
+          case 8: mapped_p = BR::Radix8; break;
+          case 16: mapped_p = BR::Radix16; break;
+          default: mapped_p = BR::Radix2; break;
+        }
+        plan_->radix_pattern.push_back(mapped_p);
+      }
+    }
     plan_->set_arena_resizer(&PlanEnvironment::ResizeArena);
     plan_->workspace.bind(*plan_);
     plan_->pending_nd_capacity = 0;
@@ -496,6 +579,20 @@ class PlanCache {
     if (it == buckets_.end()) return;
     Bucket& bucket = it->second;
     if (index < bucket.entries.size()) {
+      // Clear any dispatcher that may have been installed on the Plan before
+      // returning it to the cache. This avoids dangling pointers when
+      // callers temporarily install stack-based dispatchers and then release
+      // the token. Be defensive: catch any exceptions to avoid throwing while
+      // holding the cache mutex.
+      try {
+        auto& entry = bucket.entries[index];
+        if (entry.env) {
+          // Reset to InlineDispatcher (null is translated to Inline inside Plan)
+          entry.env->plan().set_dispatcher(nullptr);
+        }
+      } catch (...) {
+        // swallow - best-effort cleanup only
+      }
       bucket.entries[index].in_use = false;
     }
   }

@@ -1,97 +1,78 @@
-# FFTFree
+fftfree — High‑Performance FFT with Flexible Dispatch and C API
 
-An Eigen-based multithreaded batched FFT kernel with tunable parameters.
+Overview
 
-## Features
+- Header‑only FFT core built on Eigen for vectorization.
+- Algorithms: Cooley–Tukey (bit‑reversed, natural order output) and Stockham autosort.
+- Transform modes: C2C, R2C, C2R, optional half‑spectrum packing for real FFTs.
+- Output shaping: magnitude, or polar packing (real=|X|, imag=phase).
+- Metadata capture: twiddles, layout maps, stage snapshots, butterfly pairs, twiddle indices, invariants, and ωk (s‑plane) per bin. Per‑batch variants available.
 
-- Header-only implementation using Eigen for vectorization
-- Batched FFT processing (multiple signals at once)
-- Multithreaded using OpenMP
-- Power-of-two sizes (radix-2 Cooley-Tukey)
-- In-place computation
-- Parallel-first design with optional debug-only sequential fallback
-- Optional real-time probe to gauge sustainable streaming throughput
+Threading Model (Important)
 
-## Building
+- Kernels do not own threads. Inner parallelism is disabled by default.
+- A single outer WorkerPool (in the C API) owns the total thread budget and may parallelize batched windows across threads.
+- Algorithms use a light `JobDispatcher` interface so the same hot loops can run inline (serial) or post jobs to the outer pool, depending on configuration.
+- Both Cooley–Tukey and Stockham obtain their parallelism exclusively through `Plan::dispatcher()`; if you do not install a pool-backed dispatcher, they execute serially.
 
-Requires CMake 3.14+, C++17 compiler with OpenMP support.
+Three layers of parallelism (configurable):
 
-```bash
-mkdir build
-cd build
-cmake ..
-cmake --build . --config Release
-```
+1) Internal parallelism (kernel‑level)
+   - Off by default. Only enabled when `allow_inner_parallel=1` and outer threads == 1.
+   - Controlled by `PlanRuntimeConfig.allow_inner_parallel` and `inner_threads`.
 
-Eigen is automatically downloaded via FetchContent.
+2) Grouped plan parallelism (outer pool splitting windows)
+   - Enabled when `allow_outer_parallel=1` and `threads>1` in `fft_init_full`.
+   - The C API installs a dispatcher that routes algorithm jobs to the shared pool.
 
-To run the self-tests:
+3) Streaming input parallelism (pipeline)
+   - Supported by the outer pool design; enqueue additional work without saturating threads.
 
-```bash
-ctest --output-on-failure
-```
+C API (CFFI‑friendly)
 
-## Usage
+Key initializer (full control):
 
-```cpp
-#include "eigen_fft.hpp"
-#include "plan_support.hpp"
-#include <Eigen/Core>
+  void* fft_init_full(size_t n,
+                      int threads,            // outer threads
+                      int lanes,              // SIMD lane hint
+                      int inverse,            // 0/1
+                      int kernel,             // 1=CT, 2=Stockham, 0=auto
+                      int radix,
+                      const int* radix_pattern, size_t radix_pattern_len,
+                      int pad_mode,           // 0=auto,1=always,2=never
+                      int window, int hop, int stft_mode,   // STFT helpers
+                      int transform,          // 0=C2C,1=R2C,2=C2R,3=R2R
+                      int reduce_magnitude,   // 0/1
+                      int store_polar,        // 0/1
+                      int half_spectrum,      // 0/1
+                      int allow_outer_parallel, // 0/1
+                      int allow_inner_parallel, // 0/1 (only when outer threads==1)
+                      int inner_threads);
 
-int main() {
-  const int N = 1024; // FFT size (power of 2)
-  const int B = 64;   // Batch size (number of signals)
+Execute (batched):
 
-  Eigen::MatrixXcd X(N, B); // Complex matrix, rows=time/freq, cols=batch
-  // Fill X with time-domain data...
+  size_t fft_execute_batched(void* ctx,
+                             const float* pcm, size_t pcm_len,
+                             float* out_real, float* out_imag, float* out_mag,
+                             int pad_mode, size_t max_frames);
 
-  eigfft::PlanRuntimeConfig cfg;   // defaults: 4 threads, 2 Stockham lanes
-  eigfft::PlanEnvironment<double> forward_env;
-  forward_env.initialize(N, /*inverse=*/false, cfg);
-  eigfft::fft_inplace_batched<double>(X, forward_env.plan()); // Now frequency-domain
+Dispatcher API (internal)
 
-  eigfft::PlanEnvironment<double> inverse_env;
-  inverse_env.initialize(N, /*inverse=*/true, cfg);
-  eigfft::fft_inplace_batched<double>(X, inverse_env.plan()); // Back to time-domain
-}
-```
+- `Plan::set_dispatcher(JobDispatcher*)` installs an external dispatcher used by algorithms.
+- Default is `InlineDispatcher` (serial). The C API provides a `PoolDispatcher` bound to the outer WorkerPool.
 
-## Tuning
+Metadata Kinds
 
-- `plan.tuning.parallel_dim`: `Auto` (heuristic), `Columns` (good for large B), `KBlocks` (good for small B)
-- `plan.tuning.packet_step`: SIMD coarsening (0=auto, or multiple of packet size for wider batches)
-- `plan.tuning.schedule`: `Auto`, `Static`, `Dynamic`, `Guided` (scheduling policy)
-- `plan.tuning.min_work_per_thread`: Heuristic threshold for dynamic scheduling
-- CMake options: `-DFFTFREE_NATIVE=ON`, `-DFFTFREE_OPENMP=ON`, `-DFFTFREE_FAST_MATH=ON`
-- On MSVC you can override the SIMD level explicitly with
-  `-DFFTFREE_NATIVE_ARCH=SSE2|AVX|AVX2` if auto-detection does not match your CPU
+- Twiddle, LayoutMap, StageSnapshot, StageParams, ButterflyPairs, StageInvariant, TwiddleIndexMap, Omega.
+- Per‑batch variants: StageSnapshotAll, ButterflyPairsAll, TwiddleIndexMapAll.
 
-> ⚠️ Sequential execution is disabled by default. Define `EIGFFT_ALLOW_SEQUENTIAL` at
-> configure time if you need to opt into the legacy single-thread fallback for
-> debugging or comparison runs.
+Real FFT specifics
 
-### Real-time probe
+- Half‑spectrum packing (R2C/C2R): enable `half_spectrum` to use 0..N/2 bins. Inverse expands correctly.
+- Polar packing: when `store_polar=1`, each complex slot stores (mag, phase) with the same footprint.
 
-The demo binary can simulate a streaming workload after the micro-benchmarks to
-measure sustained frame/sample rates. Enable it with `--realtime` and adjust the
-parameters as needed:
+Notes
 
-```bash
-fft_example --rt \
-  --rt-sample-rate=48000 \
-  --rt-window=2048 \
-  --rt-stride=512 \
-  --rt-duration=10 \
-  --rt-delay-ms=5 \
-  --rt-safety=0.85
-```
+- No OpenMP is used in the core. All concurrency comes from the outer WorkerPool.
+- Kernels are written to be safe when run under a dispatcher or inline.
 
-The probe reports deadline overruns, worst-frame timings, and the maximum
-sample/frame rates achievable while maintaining the configured safety margin.
-
-## Performance Notes
-
-- Use `-O3 -march=native -ffast-math` for compilation
-- Enable Eigen vectorization
-- For Windows, set FTZ/DAZ to avoid denormal slowdowns
-- Batch size B should be chosen to fill SIMD lanes
