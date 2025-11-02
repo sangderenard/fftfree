@@ -68,7 +68,9 @@ class PlanEnvironment {
         if (hw <= 0) hw = 1;
         requested_inner = hw;
       }
-      requested_inner = std::clamp(requested_inner, 1, clamped_threads);
+      // Clamp inner threads to compile-time limit, not the outer threads cap.
+      requested_inner =
+          std::clamp(requested_inner, 1, Plan<Scalar>::Limits::kCompileTimeMaxThreads);
     }
 
     const int plan_thread_budget =
