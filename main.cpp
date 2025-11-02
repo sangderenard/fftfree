@@ -309,6 +309,7 @@ void run_realtime_simulation(std::mt19937_64 seed_rng, const RealtimeOptions& op
 template <typename Scalar>
 void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt_opts,
                              const eigfft::PlanRuntimeConfig& runtime_cfg,
+                             const std::vector<AlgorithmSpec>& algorithms,
                              eigfft::JobDispatcher* dispatcher = nullptr) {
   using Complex = std::complex<Scalar>;
   using MatrixXc = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
@@ -370,7 +371,7 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
     MatrixXc seed(task.N, task.B);
     fill_random(seed, rng);
 
-    for (const auto& algo : kAlgorithms) {
+    for (const auto& algo : algorithms) {
       std::cout << "  Algorithm: " << algo.label << std::endl;
       double reference_time = 0.0;
       const char* reference_label = nullptr;
@@ -453,7 +454,7 @@ void run_suite_for_precision(std::mt19937_64 seed_rng, const RealtimeOptions& rt
 
   // Run realtime simulations with different configurations
   std::vector<int> window_sizes = {1024, 64, 32};
-    for (const auto& algo : kAlgorithms) {
+    for (const auto& algo : algorithms) {
     for (int win : window_sizes) {
       int str = win / 2;  // stride = window / 2 for 50% overlap
       run_realtime_simulation<Scalar>(seed_rng, rt_opts, runtime_cfg, /*batched=*/false, win, str, algo.kind, algo.label, dispatcher);
@@ -512,6 +513,7 @@ int main(int argc, char** argv) {
     Eigen::setNbThreads(1);
 
   std::unordered_set<std::string> requested;
+  std::vector<AlgorithmSpec> selected_algorithms;  // default set below
   RealtimeOptions realtime_opts;
   eigfft::PlanRuntimeConfig runtime_cfg;
     for (int i = 1; i < argc; ++i) {
@@ -540,6 +542,31 @@ int main(int argc, char** argv) {
         runtime_cfg.lanes = value;
       } else if (arg == "--realtime" || arg == "--rt") {
         realtime_opts.enabled = true;
+      } else if (arg.rfind("--algorithms=", 0) == 0) {
+        // Comma-separated list of algorithms to run, e.g. ct,stockham
+        std::string list = arg.substr(13);
+        std::stringstream ss(list);
+        std::string token;
+        std::unordered_set<std::string> seen;
+        selected_algorithms.clear();
+        while (std::getline(ss, token, ',')) {
+          std::string t = to_lower(token);
+          if (t == "ct" || t == "cooleytukey") {
+            if (!seen.count("cooleytukey")) {
+              selected_algorithms.push_back({eigfft::KernelKind::CooleyTukey, "cooleytukey"});
+              seen.insert("cooleytukey");
+            }
+          } else if (t == "stockham" || t == "stockham-autosort") {
+            if (!seen.count("stockham-autosort")) {
+              selected_algorithms.push_back({eigfft::KernelKind::Stockham, "stockham-autosort"});
+              seen.insert("stockham-autosort");
+            }
+          } else if (!t.empty()) {
+            std::cerr << "Unknown algorithm token '" << t
+                      << "'. Supported: ct, cooleytukey, stockham." << std::endl;
+            return 1;
+          }
+        }
       } else if (arg.rfind("--rt-sample-rate=", 0) == 0) {
         realtime_opts.enabled = true;
         realtime_opts.sample_rate_hz = std::stod(arg.substr(17));
@@ -559,13 +586,14 @@ int main(int argc, char** argv) {
         realtime_opts.enabled = true;
         realtime_opts.duration_seconds = std::stod(arg.substr(14));
       } else if (arg == "--help" || arg == "-h") {
-  std::cout << "Usage: fft_example [--precision=f64,f32] [--threads=N] [--lanes=M]\n"
+  std::cout << "Usage: fft_example [--precision=f64,f32] [--threads=N] [--lanes=M] [--algorithms=list]\n"
          "  f64 : std::complex<double>\n"
          "  f32 : std::complex<float>\n"
          "Default is to run both precisions.\n"
          "\nRuntime configuration (clamped to build limits):\n"
          "  --threads=N                      Max worker threads (default 4, max 16)\n"
          "  --lanes=M                        Stockham lane capacity (default 2)\n"
+         "  --algorithms=list                Comma-separated list: ct, stockham (default: ct only)\n"
                      "\nReal-time probe options (auto-enable realtime mode):\n"
                      "  --realtime | --rt                 Enable real-time simulation\n"
                      "  --rt-sample-rate=<Hz>             Input sample rate (default 48000, max 1e6)\n"
@@ -583,8 +611,11 @@ int main(int argc, char** argv) {
       }
     }
 
-    if (requested.empty()) {
-      requested = {"f64", "f32"};
+    if (requested.empty()) { requested = {"f64", "f32"}; }
+
+    // Default algorithms: Cooley–Tukey only, unless overridden by --algorithms
+    if (selected_algorithms.empty()) {
+      selected_algorithms.push_back({eigfft::KernelKind::CooleyTukey, "cooleytukey"});
     }
 
     const std::vector<std::string> known = {"f64", "f32"};
@@ -613,10 +644,10 @@ int main(int argc, char** argv) {
     }
 
     if (requested.count("f64")) {
-      run_suite_for_precision<double>(seed_rng, realtime_opts, runtime_cfg, (local_dispatcher.pool ? &local_dispatcher : nullptr));
+      run_suite_for_precision<double>(seed_rng, realtime_opts, runtime_cfg, selected_algorithms, (local_dispatcher.pool ? &local_dispatcher : nullptr));
     }
     if (requested.count("f32")) {
-      run_suite_for_precision<float>(seed_rng, realtime_opts, runtime_cfg, (local_dispatcher.pool ? &local_dispatcher : nullptr));
+      run_suite_for_precision<float>(seed_rng, realtime_opts, runtime_cfg, selected_algorithms, (local_dispatcher.pool ? &local_dispatcher : nullptr));
     }
 
     return 0;

@@ -177,6 +177,31 @@ inline void install_crash_handler_impl() {
     AddVectoredExceptionHandler(1, reinterpret_cast<PVECTORED_EXCEPTION_HANDLER>(vectored_exception_handler));
 }
 
+// Helper invoked inside the SEH filter expression. Must be a normal function
+// (not a local definition) because filter expressions are evaluated in a
+// restricted context where some intrinsics are only valid.
+inline int fftfree_seh_on_exception(EXCEPTION_POINTERS* ep) {
+    write_text_backtrace(ep);
+    write_minidump(ep);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// C-callable thin wrapper to execute a user-provided thunk under SEH and
+// produce diagnostics (minidump + text backtrace) on exception. This is
+// inline in the header so callers can use it without adding a new TU.
+// Returns 0 on normal return or 1 if an SEH exception occurred and was
+// handled (diagnostics written). The return value allows callers to decide
+// whether to invoke recovery/restore logic.
+extern "C" inline int fftfree_run_with_seh(void (*thunk)(void*), void* ctx) {
+    __try {
+        thunk(ctx);
+        return 0;
+    } __except (fftfree_seh_on_exception(GetExceptionInformation())) {
+        // Diagnostics already written in the filter expression; signal caller.
+        return 1;
+    }
+}
+
 #else
 
 inline void write_backtrace_to_file(int signo, void* context) {

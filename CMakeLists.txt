@@ -236,3 +236,8 @@ add_test(NAME fftfree.tests COMMAND fft_tests)
 add_executable(fft_threads_trace tests/threads_trace_test.cpp)
 fftfree_apply_target_options(fft_threads_trace)
 add_test(NAME fftfree.threads_trace COMMAND fft_threads_trace)
+
+# Minimal restore/retry unit test
+add_executable(fft_restore_test tests/restore_test.cpp)
+fftfree_apply_target_options(fft_restore_test)
+add_test(NAME fftfree.restore_test COMMAND fft_restore_test)

@@ -28,6 +28,7 @@
 #include <condition_variable>
 #include <functional>
 #include <iostream>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -37,10 +38,31 @@
 #include <thread>
 #include <vector>
 #include <type_traits>
+#include <chrono>
 
 // #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 //   #include <xmmintrin.h>  // FTZ/DAZ
 // #endif
+// Crash handler helpers (write minidumps / backtraces). We include this so
+// we can optionally produce a minidump when a job causes an access
+// violation but keep the process alive.
+#include "crash_handler.hpp"
+// Helper used to invoke a C++ std::function under a C-callable trampoline so
+// SEH can be placed in a function without C++ object unwinding requirements.
+#if defined(_WIN32) && defined(_MSC_VER)
+struct SEHInvokeCtx {
+  // heap-allocated copy of callable
+  std::function<void(size_t, size_t, int)>* heap_fn;
+  size_t start;
+  size_t end;
+  int worker;
+};
+extern "C" inline void eigfft_seh_trampoline(void* p) {
+  SEHInvokeCtx* c = static_cast<SEHInvokeCtx*>(p);
+  // Call the copied std::function. Any C++ exceptions are separate from SEH.
+  (*(c->heap_fn))(c->start, c->end, c->worker);
+}
+#endif
 // Sequential execution is always allowed; parallelism is coordinated by callers.
 
 namespace eigfft {
@@ -60,6 +82,120 @@ class JobDispatcher {
   virtual ~JobDispatcher() = default;
   virtual void parallel_for(size_t total, size_t chunk, const Fn& fn) = 0;
 };
+
+// Lightweight, non-blocking trace logger used only when thread tracing is
+// enabled. Worker threads append messages to a thread-local buffer which is
+// periodically flushed to a central queue consumed by a background thread.
+// This reduces contention and prevents synchronous console I/O from masking
+// timing-sensitive races.
+#if EIGFFT_TRACE_THREADS
+class TraceLogger {
+ public:
+  static TraceLogger& instance() {
+    static TraceLogger inst;
+    return inst;
+  }
+
+  void log(std::string msg) {
+    // Ensure messages end with newline for readability when flushed.
+    if (msg.empty() || msg.back() != '\n') msg.push_back('\n');
+    thread_local std::vector<std::string> tls_buf;
+    tls_buf.push_back(std::move(msg));
+    // If the thread-local buffer grows large, move it into the central queue.
+    if (tls_buf.size() >= 64) {
+      std::vector<std::string> to_push;
+      to_push.swap(tls_buf);
+      {
+        std::lock_guard<std::mutex> g(queue_mutex_);
+        queue_.push_back(std::move(to_push));
+      }
+      queue_cv_.notify_one();
+    }
+  }
+
+ private:
+  TraceLogger() : running_(true) {
+    // Open run log before starting background writer so it can immediately
+    // accept messages and overwrite previous run's contents.
+    open_run_log();
+    worker_ = std::thread([this]{ run(); });
+  }
+  ~TraceLogger() {
+    // Flush any thread-local buffers by a best-effort wake (they may be lost
+    // if threads exit without flushing). Stop background worker and drain.
+    running_ = false;
+    queue_cv_.notify_one();
+    if (worker_.joinable()) worker_.join();
+    drain_all();
+    if (file_.is_open()) file_.close();
+  }
+
+  void run() {
+    while (running_) {
+      std::vector<std::vector<std::string>> work;
+      {
+        std::unique_lock<std::mutex> lk(queue_mutex_);
+        if (queue_.empty()) queue_cv_.wait_for(lk, std::chrono::milliseconds(100));
+        if (!queue_.empty()) {
+          work.swap(queue_);
+        }
+      }
+      if (!work.empty()) {
+        std::lock_guard<std::mutex> out_l(out_mutex_);
+        if (file_.is_open()) {
+          for (auto &vec : work) {
+            for (auto &m : vec) file_ << m;
+          }
+          file_.flush();
+        } else {
+          for (auto &vec : work) for (auto &m : vec) std::cout << m;
+          std::cout << std::flush;
+        }
+      }
+    }
+  }
+
+  void drain_all() {
+    std::vector<std::vector<std::string>> work;
+    {
+      std::lock_guard<std::mutex> lk(queue_mutex_);
+      work.swap(queue_);
+    }
+    std::lock_guard<std::mutex> out_l(out_mutex_);
+    if (file_.is_open()) {
+      for (auto &vec : work) for (auto &m : vec) file_ << m;
+      file_.flush();
+    } else {
+      for (auto &vec : work) for (auto &m : vec) std::cout << m;
+      std::cout << std::flush;
+    }
+  }
+
+  // Open the per-run log file (overwrites previous run). If the environment
+  // variable FFTFREE_LOGFILE is set, use it; otherwise use default name.
+  void open_run_log() {
+    const char* envp = std::getenv("FFTFREE_LOGFILE");
+    const std::string fname = envp ? std::string(envp) : std::string("fftfree_last_run.log");
+    // Open truncating so each run overwrites the previous log
+    file_.open(fname, std::ios::out | std::ios::trunc);
+  }
+
+  std::atomic<bool> running_{false};
+  std::thread worker_;
+  std::mutex queue_mutex_;
+  static inline std::mutex out_mutex_;
+  std::condition_variable queue_cv_;
+  std::vector<std::vector<std::string>> queue_;
+  std::ofstream file_;
+};
+#else
+// When tracing is disabled, provide a no-op shim with the same API so call
+// sites don't need to be conditionalized repeatedly.
+struct TraceLogger {
+  static TraceLogger& instance() { static TraceLogger i; return i; }
+  void log(std::string) {}
+};
+#endif
 
 // Default inline dispatcher: runs the job in the current thread.
 class InlineDispatcher : public JobDispatcher {
@@ -298,7 +434,7 @@ class WorkerPool {
     const int requested = std::max(1, threads);
     if (workers_.empty()) {
       stop_ = false;
-      job_.fn = nullptr;
+      std::atomic_store(&job_.fn, std::shared_ptr<Job::FnType>(nullptr));
       job_.total = 0;
       job_.chunk = 1;
       job_.chunk_count = 0;
@@ -311,8 +447,12 @@ class WorkerPool {
 
     if (requested <= total_threads_) {
 #if EIGFFT_TRACE_THREADS
-      std::cout << "[pool] resize request threads=" << requested
-                << " (keeping existing total_threads=" << total_threads_ << ")" << std::endl;
+  {
+    std::ostringstream _oss;
+    _oss << "[pool] resize request threads=" << requested
+     << " (keeping existing total_threads=" << total_threads_ << ")";
+    TraceLogger::instance().log(_oss.str());
+  }
 #endif
       return;  // keep existing fleet alive; never shrink in the hot path
     }
@@ -328,8 +468,12 @@ class WorkerPool {
       ++total_threads_;
       
 #if EIGFFT_TRACE_THREADS
-      std::cout << "[pool] started worker id=" << worker_id
-                << " total_threads=" << total_threads_ << std::endl;
+  {
+    std::ostringstream _oss;
+    _oss << "[pool] started worker id=" << worker_id
+     << " total_threads=" << total_threads_;
+    TraceLogger::instance().log(_oss.str());
+  }
 #endif
     }
   }
@@ -343,10 +487,14 @@ class WorkerPool {
     const size_t chunk_size = chunk;
     std::function<void(size_t, size_t, int)> wrapped = std::forward<Fn>(fn);
 #if EIGFFT_TRACE_THREADS
-    std::cout << "[pool] parallel_for begin total=" << total_items
-              << " chunk=" << chunk_size
-              << " worker_count=" << worker_count_
-              << " total_threads=" << total_threads_ << std::endl;
+    {
+      std::ostringstream _oss;
+      _oss << "[pool] parallel_for begin total=" << total_items
+           << " chunk=" << chunk_size
+           << " worker_count=" << worker_count_
+           << " total_threads=" << total_threads_;
+      TraceLogger::instance().log(_oss.str());
+    }
 #endif
     if (total_threads_ <= 1 || worker_count_ == 0 || total_items <= chunk_size) {
       size_t start = 0;
@@ -356,7 +504,7 @@ class WorkerPool {
         start = end;
       }
 #if EIGFFT_TRACE_THREADS
-      std::cout << "[pool] parallel_for completed inline" << std::endl;
+  TraceLogger::instance().log(std::string("[pool] parallel_for completed inline"));
 #endif
       return;
     }
@@ -364,7 +512,13 @@ class WorkerPool {
     const size_t chunk_count = (total_items + chunk_size - 1) / chunk_size;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      job_.fn = wrapped;
+      // Store a heap-allocated callable into a shared_ptr and publish it
+      // atomically so workers can safely copy the shared_ptr without
+      // holding the mutex in the hot path.
+  auto callable_ptr = std::make_shared<Job::FnType>(wrapped);
+  std::atomic_store(&job_.fn, callable_ptr);
+  // Clear any restore callback for this job.
+  std::atomic_store(&job_.on_failure, std::shared_ptr<Job::RestoreType>(nullptr));
       job_.total = total_items;
       job_.chunk = chunk_size;
       job_.chunk_count = chunk_count;
@@ -372,6 +526,16 @@ class WorkerPool {
       // Count main + workers; everyone decrements once when done draining.
       job_.pending.store(worker_count_ + 1, std::memory_order_relaxed);
       job_.active = true;
+#if EIGFFT_TRACE_THREADS
+  {
+    std::ostringstream _oss;
+    _oss << "[pool] armed job fn=" << static_cast<const void*>(callable_ptr.get())
+     << " total=" << job_.total
+     << " chunks=" << job_.chunk_count
+     << " pending=" << job_.pending.load();
+    TraceLogger::instance().log(_oss.str());
+  }
+#endif
     }
     cv_job_.notify_all();
 
@@ -389,22 +553,111 @@ class WorkerPool {
       job_.active = false;
       cv_done_.notify_one();
     }
-    // At this point all workers (and main thread) have finished draining chunks.
-    job_.fn = nullptr;
+  // At this point all workers (and main thread) have finished draining chunks.
+  // Clear the job callback under the mutex to ensure no worker observes a
+  // cleared fn while still able to enter the call site. Use atomic_store
+  // on the shared_ptr so readers using atomic_load see a consistent null.
+  std::atomic_store(&job_.fn, std::shared_ptr<Job::FnType>(nullptr));
+  std::atomic_store(&job_.on_failure, std::shared_ptr<Job::RestoreType>(nullptr));
 #if EIGFFT_TRACE_THREADS
-    std::cout << "[pool] parallel_for finished" << std::endl;
+  TraceLogger::instance().log(std::string("[pool] parallel_for finished"));
+#endif
+  }
+
+  // Extended parallel_for that accepts a restore callback invoked when a
+  // worker experiences a crash while executing a chunk. The restore callback
+  // receives the start/end indices of the failed chunk(s).
+  template <class Fn>
+  void parallel_for_with_restore(size_t total_items, size_t chunk, Fn&& fn, std::function<void(size_t,size_t)> restore_fn) {
+    if (total_items == 0) return;
+    if (chunk == 0) chunk = 1;
+    const size_t chunk_size = chunk;
+    std::function<void(size_t, size_t, int)> wrapped = std::forward<Fn>(fn);
+#if EIGFFT_TRACE_THREADS
+    {
+      std::ostringstream _oss;
+      _oss << "[pool] parallel_for begin total=" << total_items
+           << " chunk=" << chunk_size
+           << " worker_count=" << worker_count_
+           << " total_threads=" << total_threads_;
+      TraceLogger::instance().log(_oss.str());
+    }
+#endif
+    if (total_threads_ <= 1 || worker_count_ == 0 || total_items <= chunk_size) {
+      size_t start = 0;
+      while (start < total_items) {
+        const size_t end = std::min(total_items, start + chunk_size);
+        wrapped(start, end, 0);
+        start = end;
+      }
+#if EIGFFT_TRACE_THREADS
+  TraceLogger::instance().log(std::string("[pool] parallel_for completed inline"));
+#endif
+      return;
+    }
+
+    const size_t chunk_count = (total_items + chunk_size - 1) / chunk_size;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto callable_ptr = std::make_shared<Job::FnType>(wrapped);
+      std::atomic_store(&job_.fn, callable_ptr);
+      auto restore_ptr = std::make_shared<Job::RestoreType>(restore_fn);
+      std::atomic_store(&job_.on_failure, restore_ptr);
+      job_.total = total_items;
+      job_.chunk = chunk_size;
+      job_.chunk_count = chunk_count;
+      job_.next.store(0, std::memory_order_relaxed);
+      job_.pending.store(worker_count_ + 1, std::memory_order_relaxed);
+      job_.active = true;
+#if EIGFFT_TRACE_THREADS
+  {
+    std::ostringstream _oss;
+    _oss << "[pool] armed job fn=" << static_cast<const void*>(callable_ptr.get())
+         << " total=" << job_.total
+         << " chunks=" << job_.chunk_count
+         << " pending=" << job_.pending.load();
+    TraceLogger::instance().log(_oss.str());
+  }
+#endif
+    }
+    cv_job_.notify_all();
+
+    drain_chunks(0);
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    const int remaining = job_.pending.fetch_sub(1, std::memory_order_acq_rel);
+
+    if (remaining > 1) {
+      cv_done_.wait(lock, [&] { return !job_.active; });
+    } else {
+      job_.active = false;
+      cv_done_.notify_one();
+    }
+
+    std::atomic_store(&job_.fn, std::shared_ptr<Job::FnType>(nullptr));
+    std::atomic_store(&job_.on_failure, std::shared_ptr<Job::RestoreType>(nullptr));
+#if EIGFFT_TRACE_THREADS
+    TraceLogger::instance().log(std::string("[pool] parallel_for finished"));
 #endif
   }
 
  private:
   struct Job {
-    std::function<void(size_t, size_t, int)> fn;
+    using FnType = std::function<void(size_t, size_t, int)>;
+    using RestoreType = std::function<void(size_t, size_t)>;
+    // Use shared_ptr to the callable and atomic_load/atomic_store on the
+    // shared_ptr to make copies safe across threads without taking the
+    // main mutex at the hot path. This avoids a tiny window where a worker
+    // could observe a cleared std::function and throw std::_Xbad_function_call.
+    std::shared_ptr<FnType> fn;
     size_t total = 0;
     size_t chunk = 1;
     size_t chunk_count = 0;
     std::atomic<size_t> next{0};
     std::atomic<int> pending{0};
     bool active = false;
+    // Optional per-job restore callback published atomically (may be null).
+    std::shared_ptr<RestoreType> on_failure;
   };
 
   void shutdown() {
@@ -433,7 +686,11 @@ class WorkerPool {
       cv_job_.wait(lock, [&] { return stop_ || job_.active; });
       if (stop_) return;
 #if EIGFFT_TRACE_THREADS
-  std::cout << "[pool] worker " << worker_id << " woke" << std::endl;
+  {
+    std::ostringstream _oss;
+    _oss << "[pool] worker " << worker_id << " woke";
+    TraceLogger::instance().log(_oss.str());
+  }
 #endif
       lock.unlock();
 
@@ -458,10 +715,108 @@ class WorkerPool {
       const size_t start = index * job_.chunk;
       const size_t end = std::min(job_.total, start + job_.chunk);
 #if EIGFFT_TRACE_THREADS
-      std::cout << "[pool] worker " << worker_id << " processing chunk idx=" << index
-            << " start=" << start << " end=" << end << std::endl;
+  {
+    std::ostringstream _oss;
+    _oss << "[pool] worker " << worker_id << " processing chunk idx=" << index
+     << " start=" << start << " end=" << end;
+    TraceLogger::instance().log(_oss.str());
+  }
 #endif
-      job_.fn(start, end, worker_id);
+      // Make an atomic copy of the callable so it cannot be cleared out from
+      // under us while we execute it. If the job has been cleared, bail.
+  auto fn = std::atomic_load(&job_.fn);
+  if (!fn) {
+#if EIGFFT_TRACE_THREADS
+  {
+    std::ostringstream _oss;
+    _oss << "[pool] worker " << worker_id << " saw cleared fn at idx=" << index
+         << " start=" << start << " end=" << end;
+    TraceLogger::instance().log(_oss.str());
+  }
+#endif
+    break;
+  }
+#if EIGFFT_TRACE_THREADS
+  {
+    std::ostringstream _oss;
+    _oss << "[pool] worker " << worker_id << " calling fn=" << static_cast<const void*>(fn.get())
+         << " idx=" << index << " start=" << start << " end=" << end;
+    TraceLogger::instance().log(_oss.str());
+  }
+#endif
+
+  #define EIGFFT_JOB_RETRY_COUNT 2
+  // Invoke the job callable inside a platform-specific containment block so
+  // an access violation or other SEH exception from the job does not unwind
+  // out of the worker thread and kill the process. On Windows with MSVC we
+  // use SEH (delegated to fftfree_run_with_seh) and produce a minidump; on
+  // other platforms we catch C++ exceptions and log them. In both cases we
+  // attempt a small number of restore+retry cycles when a failure occurs.
+#if defined(_WIN32) && defined(_MSC_VER)
+  // Use fftfree_run_with_seh and a heap-copied std::function for trampoline
+  // invocation so MSVC's SEH rules are satisfied.
+  {
+    SEHInvokeCtx* ctx = new SEHInvokeCtx{ new std::function<void(size_t,size_t,int)>(*fn), start, end, worker_id };
+    int ex = fftfree::fftfree_run_with_seh(&eigfft_seh_trampoline, static_cast<void*>(ctx));
+    delete ctx->heap_fn;
+    delete ctx;
+    if (ex) {
+      std::ostringstream _oss;
+      _oss << "[pool] worker " << worker_id << " job crashed at idx=" << index
+           << " start=" << start << " end=" << end;
+      TraceLogger::instance().log(_oss.str());
+      auto restore_cb = std::atomic_load(&job_.on_failure);
+      if (restore_cb) (*restore_cb)(start, end);
+      // Attempt retries after restore using the SEH runner again.
+      for (int attempt = 0; attempt < EIGFFT_JOB_RETRY_COUNT; ++attempt) {
+        std::ostringstream _oss2;
+        _oss2 << "[pool] worker " << worker_id << " retry attempt=" << (attempt+1) << " idx=" << index;
+        TraceLogger::instance().log(_oss2.str());
+        SEHInvokeCtx* ctx2 = new SEHInvokeCtx{ new std::function<void(size_t,size_t,int)>(*fn), start, end, worker_id };
+        int ex2 = fftfree::fftfree_run_with_seh(&eigfft_seh_trampoline, static_cast<void*>(ctx2));
+        delete ctx2->heap_fn;
+        delete ctx2;
+        if (!ex2) {
+          TraceLogger::instance().log(std::string("[pool] worker retry succeeded"));
+          break;
+        }
+        if (attempt + 1 < EIGFFT_JOB_RETRY_COUNT && restore_cb) (*restore_cb)(start, end);
+        if (attempt + 1 == EIGFFT_JOB_RETRY_COUNT) {
+          TraceLogger::instance().log(std::string("[pool] worker persistent failure after retries"));
+        }
+      }
+    }
+  }
+#else
+  // Non-Windows: catch C++ exceptions and attempt restore+retry cycles.
+  int attempt = 0;
+  for (;;) {
+    try {
+      (*fn)(start, end, worker_id);
+      break; // success
+    } catch (const std::exception& e) {
+      std::ostringstream _oss;
+      _oss << "[pool] worker " << worker_id << " job threw exception: " << e.what()
+           << " idx=" << index << " start=" << start << " end=" << end;
+      TraceLogger::instance().log(_oss.str());
+    } catch (...) {
+      std::ostringstream _oss;
+      _oss << "[pool] worker " << worker_id << " job threw unknown exception at idx=" << index
+           << " start=" << start << " end=" << end;
+      TraceLogger::instance().log(_oss.str());
+    }
+    auto restore_cb = std::atomic_load(&job_.on_failure);
+    if (restore_cb) (*restore_cb)(start, end);
+    ++attempt;
+    if (attempt > EIGFFT_JOB_RETRY_COUNT) {
+      TraceLogger::instance().log(std::string("[pool] worker persistent failure after retries"));
+      break;
+    }
+    std::ostringstream _oss2;
+    _oss2 << "[pool] worker retry attempt=" << attempt << " idx=" << index;
+    TraceLogger::instance().log(_oss2.str());
+  }
+#endif
     }
   }
 
@@ -1041,6 +1396,12 @@ template<class T> struct Plan {
     int packet_step = 0;            // 0 => auto (=packet_cols), else multiple thereof
     int min_work_per_thread = 64;   // heuristics gate
     bool force_ftz_daz = true;
+    // Ingestion tuning: enable background ingestion/precompute of chunk
+    // pointer arrays and optional backup copies for fault recovery.
+    // Enabled by default to make transforms resilient to per-chunk crashes.
+    bool use_ingest = true;
+    bool ingest_backup = true;
+    int ingest_queue_capacity = 64;
   } tuning;
 
   // Butterfly execution mode for Stockham: explicit, not implicit adapter.
@@ -1654,13 +2015,19 @@ inline void trace_layout_info(const char* alg,
                               int B,
                               int lane_capacity = -1) {
 #if EIGFFT_TRACE_LAYOUT
-  std::cout << "[" << alg << "] axis_stride=" << axis_stride
-            << " batch_stride=" << batch_stride;
-  if (lane_capacity >= 0) std::cout << " lane_capacity=" << lane_capacity;
-  std::cout << " lane_cols(final)=" << lane_cols << std::endl;
+  {
+    std::ostringstream _oss;
+    _oss << "[" << alg << "] axis_stride=" << axis_stride
+         << " batch_stride=" << batch_stride;
+    if (lane_capacity >= 0) _oss << " lane_capacity=" << lane_capacity;
+    _oss << " lane_cols(final)=" << lane_cols;
+    TraceLogger::instance().log(_oss.str());
+  }
   for (int bi = 0; bi < std::min(3, B); ++bi) {
+    std::ostringstream _oss2;
     const void* ptr = static_cast<const void*>(layout.base + static_cast<std::size_t>(bi) * (std::size_t)batch_stride);
-    std::cout << "[" << alg << "] base[" << bi << "]=" << ptr << std::endl;
+    _oss2 << "[" << alg << "] base[" << bi << "]=" << ptr;
+    TraceLogger::instance().log(_oss2.str());
   }
 #else
   (void)alg; (void)layout; (void)axis_stride; (void)batch_stride; (void)lane_cols; (void)B; (void)lane_capacity;
@@ -1745,23 +2112,106 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   }
 
   const int chunk_count = (B + active_lane_cols - 1) / active_lane_cols;
+  // Optional ingestion precompute: precompute column pointer arrays for each
+  // chunk and optionally store backups of the column data to allow recovery
+  // if a chunk fails during processing. The precomputed chunks are published
+  // via atomic shared_ptr and workers will use them when available.
+  struct ChunkWork {
+    int col0;
+    int width;
+    std::vector<Complex*> columns;
+    // backup per-column: each vector contains N elements (axis length)
+    std::vector<std::vector<Complex>> backups;
+    ChunkWork(int c0, int w) : col0(c0), width(w) {}
+  };
+
+  // prechunks_owner keeps ownership; prechunk_ptrs publishes raw pointers
+  // atomically for low-overhead consumer reads.
+  std::vector<std::shared_ptr<ChunkWork>> prechunks_owner;
+  std::unique_ptr<std::atomic<ChunkWork*>[]> prechunk_ptrs;
+  if (P.tuning.use_ingest) {
+    prechunks_owner.resize(static_cast<size_t>(chunk_count));
+    prechunk_ptrs.reset(new std::atomic<ChunkWork*>[static_cast<size_t>(chunk_count)]);
+    for (size_t i = 0; i < static_cast<size_t>(chunk_count); ++i) prechunk_ptrs[i].store(nullptr);
+    // Spawn a background ingester thread to populate prechunks in order.
+    std::thread ingester([&]() {
+      for (int ci = 0; ci < chunk_count; ++ci) {
+        const int col = ci * active_lane_cols;
+        const int width = std::min(active_lane_cols, B - col);
+        if (width <= 0) {
+    prechunk_ptrs[static_cast<size_t>(ci)].store(nullptr);
+          continue;
+        }
+        auto cw = std::make_shared<ChunkWork>(col, width);
+        cw->columns.resize(static_cast<size_t>(width));
+        for (int lane = 0; lane < width; ++lane) {
+          const Eigen::Index batch_index = Eigen::Index(col + lane);
+          cw->columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
+        }
+        if (P.tuning.ingest_backup) {
+          cw->backups.resize(static_cast<size_t>(width));
+          for (int lane = 0; lane < width; ++lane) {
+            auto& b = cw->backups[static_cast<size_t>(lane)];
+            b.resize(static_cast<size_t>(N));
+            Complex* colptr = cw->columns[static_cast<size_t>(lane)];
+            for (int i = 0; i < N; ++i) b[static_cast<size_t>(i)] = colptr[Eigen::Index(i) * axis_stride];
+          }
+        }
+  prechunks_owner[static_cast<size_t>(ci)] = cw;
+  prechunk_ptrs[static_cast<size_t>(ci)].store(cw.get());
+      }
+    });
+    // Detach ingester; chunks are published atomically and used when ready.
+    ingester.detach();
+  }
   // Unified trace for layout/stride info (no-op unless EIGFFT_TRACE_LAYOUT=1)
   detail::trace_layout_info<T>("cooleytukey", layout, axis_stride, batch_stride, static_cast<int>(active_lane_cols), B);
+#if EIGFFT_TRACE_THREADS
+  {
+    std::ostringstream _oss;
+    _oss << "[ct] workspace: B=" << B
+         << " threads=" << threads
+         << " lane_cols(requested)=" << lane_cols
+         << " lane_cols(active)=" << active_lane_cols
+         << " chunks=" << chunk_count
+         << " axis_stride=" << axis_stride
+         << " batch_stride=" << batch_stride;
+    TraceLogger::instance().log(_oss.str());
+  }
+  TraceLogger::instance().log(std::string("[ct] permute begin: chunks=") + std::to_string(chunk_count) + std::string(" lane_cols=") + std::to_string(active_lane_cols));
+#endif
   const int* bitrev = P.bitrev;
 
 #if EIGFFT_TIMING
   timing_internal::ScopedTimer __t_pre_permute(timing_internal::Bin::PreButterfly);
 #endif
   {
-    auto permute_fn = [&](size_t start, size_t end, int /*worker_id*/) {
+    auto permute_fn = [&](size_t start, size_t end, int worker_id) {
       std::vector<Complex*> columns(static_cast<size_t>(active_lane_cols));
       for (size_t chunk = start; chunk < end; ++chunk) {
         const int col = static_cast<int>(chunk) * active_lane_cols;
         const int width = std::min(active_lane_cols, B - col);
+#if EIGFFT_TRACE_THREADS
+  {
+    std::ostringstream _oss;
+    _oss << "[ct] permute chunk worker=" << worker_id
+         << " chunk_idx=" << chunk
+         << " col0=" << col
+         << " width=" << width;
+    TraceLogger::instance().log(_oss.str());
+  }
+#endif
         if (width <= 0) continue;
-        for (int lane = 0; lane < width; ++lane) {
-          const Eigen::Index batch_index = Eigen::Index(col + lane);
-          columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
+        // If ingestion precomputed column pointers are available use them.
+        ChunkWork* cw = nullptr;
+        if (P.tuning.use_ingest) cw = prechunk_ptrs[static_cast<size_t>(chunk)].load(std::memory_order_acquire);
+        if (cw && cw->width == width) {
+          for (int lane = 0; lane < width; ++lane) columns[static_cast<size_t>(lane)] = cw->columns[static_cast<size_t>(lane)];
+        } else {
+          for (int lane = 0; lane < width; ++lane) {
+            const Eigen::Index batch_index = Eigen::Index(col + lane);
+            columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
+          }
         }
         for (int i = 0; i < N; ++i) {
           const int src = bitrev[i];
@@ -1775,8 +2225,34 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
         }
       }
     };
-    P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, permute_fn);
+    if (P.tuning.use_ingest) {
+      auto restore_cb = [&](size_t start, size_t end) {
+        for (size_t chunk = start; chunk < end; ++chunk) {
+          ChunkWork* cw = prechunk_ptrs[static_cast<size_t>(chunk)].load(std::memory_order_acquire);
+          if (!cw) continue;
+          if (!P.tuning.ingest_backup) continue;
+          const int col0 = cw->col0;
+          const int width = cw->width;
+          for (int lane = 0; lane < width; ++lane) {
+            Complex* dst = layout.base + static_cast<Eigen::Index>(col0 + lane) * batch_stride;
+            const auto& backup = cw->backups[static_cast<size_t>(lane)];
+            for (int i = 0; i < N; ++i) dst[Eigen::Index(i) * axis_stride] = backup[static_cast<size_t>(i)];
+          }
+        }
+      };
+      if (auto wp = dynamic_cast<WorkerPool*>(P.dispatcher())) {
+        wp->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, permute_fn, restore_cb);
+      } else {
+        P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, permute_fn);
+      }
+    } else {
+      P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, permute_fn);
+    }
   }
+  
+#if EIGFFT_TRACE_THREADS
+  TraceLogger::instance().log(std::string("[ct] permute end"));
+#endif
 
   
 #if EIGFFT_TIMING
@@ -1799,7 +2275,7 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
     const bool capture_twmap_all = twmap_all.enabled();
     const bool capture_twmap_single = twmap.enabled();
 
-    auto stage_chunk = [&](size_t start, size_t end, int /*worker_id*/) {
+    auto stage_chunk = [&](size_t start, size_t end, int worker_id) {
       std::vector<Complex*> columns(static_cast<size_t>(active_lane_cols));
       std::vector<Complex> a_buf(static_cast<size_t>(active_lane_cols));
       std::vector<Complex> b_buf(static_cast<size_t>(active_lane_cols));
@@ -1809,10 +2285,27 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
       for (size_t chunk = start; chunk < end; ++chunk) {
         const int col = static_cast<int>(chunk) * active_lane_cols;
         const int width = std::min(active_lane_cols, B - col);
+#if EIGFFT_TRACE_THREADS
+  if (len == N) {
+    std::ostringstream _oss;
+    _oss << "[ct] stage chunk worker=" << worker_id
+         << " len=" << len
+         << " chunk_idx=" << chunk
+         << " col0=" << col
+         << " width=" << width;
+    TraceLogger::instance().log(_oss.str());
+  }
+#endif
         if (width <= 0) continue;
-        for (int lane = 0; lane < width; ++lane) {
-          const Eigen::Index batch_index = Eigen::Index(col + lane);
-          columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
+        ChunkWork* cw = nullptr;
+        if (P.tuning.use_ingest) cw = prechunk_ptrs[static_cast<size_t>(chunk)].load(std::memory_order_acquire);
+        if (cw && cw->width == width) {
+          for (int lane = 0; lane < width; ++lane) columns[static_cast<size_t>(lane)] = cw->columns[static_cast<size_t>(lane)];
+        } else {
+          for (int lane = 0; lane < width; ++lane) {
+            const Eigen::Index batch_index = Eigen::Index(col + lane);
+            columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
+          }
         }
         for (int k = 0; k < half; ++k) {
           const Complex w = P.W[k * step];
@@ -1880,7 +2373,46 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
         }
       }
     };
-    P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, stage_chunk);
+#if EIGFFT_TRACE_THREADS
+    {
+      std::ostringstream _oss;
+      _oss << "[ct] stage begin: len=" << len
+           << " half=" << half
+           << " blocks=" << blocks
+           << " chunks=" << chunk_count;
+      TraceLogger::instance().log(_oss.str());
+    }
+#endif
+    if (P.tuning.use_ingest) {
+      auto restore_cb = [&](size_t start, size_t end) {
+        for (size_t chunk = start; chunk < end; ++chunk) {
+          ChunkWork* cw = prechunk_ptrs[static_cast<size_t>(chunk)].load(std::memory_order_acquire);
+          if (!cw) continue;
+          if (!P.tuning.ingest_backup) continue;
+          const int col0 = cw->col0;
+          const int width = cw->width;
+          for (int lane = 0; lane < width; ++lane) {
+            Complex* dst = layout.base + static_cast<Eigen::Index>(col0 + lane) * batch_stride;
+            const auto& backup = cw->backups[static_cast<size_t>(lane)];
+            for (int i = 0; i < N; ++i) dst[Eigen::Index(i) * axis_stride] = backup[static_cast<size_t>(i)];
+          }
+        }
+      };
+      if (auto wp = dynamic_cast<WorkerPool*>(P.dispatcher())) {
+        wp->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, stage_chunk, restore_cb);
+      } else {
+        P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, stage_chunk);
+      }
+    } else {
+      P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, stage_chunk);
+    }
+#if EIGFFT_TRACE_THREADS
+    {
+      std::ostringstream _oss;
+      _oss << "[ct] stage end: len=" << len;
+      TraceLogger::instance().log(_oss.str());
+    }
+#endif
     // Per-stage metadata and snapshots are captured at write-time above.
   }
 
@@ -2081,13 +2613,16 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
 #if EIGFFT_TRACE_STOCKHAM
   static std::atomic<int> dispatch_seq{0};
   const int dispatch_id = dispatch_seq.fetch_add(1, std::memory_order_relaxed);
-  std::cout << "[stockham] dispatch=" << dispatch_id
-            << " plan=" << &P
-            << " state=" << state
-            << " layout.base=" << static_cast<const void*>(layout.base)
-            << " N=" << N
-            << " B=" << B
-            << std::endl;
+  {
+    std::ostringstream _oss;
+    _oss << "[stockham] dispatch=" << dispatch_id
+         << " plan=" << &P
+         << " state=" << state
+         << " layout.base=" << static_cast<const void*>(layout.base)
+         << " N=" << N
+         << " B=" << B;
+    TraceLogger::instance().log(_oss.str());
+  }
 #endif
 
   const int batch_size_int = static_cast<int>(layout.batch_size);
@@ -2119,11 +2654,14 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
   const int lane_capacity = stockham_capacity;
   const int lane_cols = std::max(1, std::min({desired_lanes, workspace_lanes, lane_capacity, cooleytukey_capacity}));
 #if EIGFFT_TRACE_STOCKHAM
-  std::cout << "[stockham] lanes: requested=" << requested_lanes
-            << " packet_cols=" << P.packet_cols
-            << " lane_cols(final)=" << lane_cols
-            << " capacity(stockham/cooleytukey)=" << stockham_capacity << "/" << cooleytukey_capacity
-            << std::endl;
+  {
+    std::ostringstream _oss;
+    _oss << "[stockham] lanes: requested=" << requested_lanes
+         << " packet_cols=" << P.packet_cols
+         << " lane_cols(final)=" << lane_cols
+         << " capacity(stockham/cooleytukey)=" << stockham_capacity << "/" << cooleytukey_capacity;
+    TraceLogger::instance().log(_oss.str());
+  }
 #endif
   const Eigen::Index axis_stride = layout.axis_stride;
   const Eigen::Index batch_stride = layout.batch_stride;
@@ -2132,20 +2670,26 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
   detail::trace_layout_info<T>("stockham", layout, axis_stride, batch_stride, lane_cols, static_cast<int>(layout.batch_size), lane_capacity);
 #endif
 #if EIGFFT_TRACE_STOCKHAM
-  std::cout << "[stockham] dispatch=" << dispatch_id
-            << " desired_threads=" << desired_threads
-            << " dispatcher_threads=" << workspace_threads
-            << " lane_cols=" << lane_cols
-            << " lane_capacity=" << lane_capacity
-            << " axis_stride=" << axis_stride
-            << " batch_stride=" << batch_stride
-            << std::endl;
-  std::cout << "[stockham] arena ping=" << static_cast<const void*>(state->arena.stockham_ping)
-            << " pong=" << static_cast<const void*>(state->arena.stockham_pong)
-            << " lane_bases=" << static_cast<const void*>(state->arena.stockham_lane_bases)
-            << " thread_capacity=" << state->arena.stockham_thread_capacity
-            << " lane_capacity=" << state->arena.stockham_lane_capacity
-            << std::endl;
+  {
+    std::ostringstream _oss;
+    _oss << "[stockham] dispatch=" << dispatch_id
+         << " desired_threads=" << desired_threads
+         << " dispatcher_threads=" << workspace_threads
+         << " lane_cols=" << lane_cols
+         << " lane_capacity=" << lane_capacity
+         << " axis_stride=" << axis_stride
+         << " batch_stride=" << batch_stride;
+    TraceLogger::instance().log(_oss.str());
+  }
+  {
+    std::ostringstream _oss2;
+    _oss2 << "[stockham] arena ping=" << static_cast<const void*>(state->arena.stockham_ping)
+          << " pong=" << static_cast<const void*>(state->arena.stockham_pong)
+          << " lane_bases=" << static_cast<const void*>(state->arena.stockham_lane_bases)
+          << " thread_capacity=" << state->arena.stockham_thread_capacity
+          << " lane_capacity=" << state->arena.stockham_lane_capacity;
+    TraceLogger::instance().log(_oss2.str());
+  }
 #endif
 
   if (P.tuning.force_ftz_daz) Plan<T>::set_ftz_daz(true);
@@ -2171,13 +2715,15 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     }
     // std::cerr << "[stockham debug] chunk start=" << start << " end=" << end
     //           << " worker=" << worker_id << " width=" << width << std::endl;
-  #if EIGFFT_TRACE_STOCKHAM
+    #if EIGFFT_TRACE_STOCKHAM
     if (start == 0 && worker_id == 0) {
-      std::cout << "[stockham] first chunk width=" << width
-                << " threads=" << workspace_threads
-                << " lane_capacity=" << lane_capacity << std::endl;
+      std::ostringstream _oss;
+      _oss << "[stockham] first chunk width=" << width
+           << " threads=" << workspace_threads
+           << " lane_capacity=" << lane_capacity;
+      TraceLogger::instance().log(_oss.str());
     }
-#endif
+    #endif
     size_t slot = static_cast<size_t>(worker_id);
     if (slot >= static_cast<size_t>(state->arena.stockham_thread_capacity)) {
       std::ostringstream oss;
@@ -2201,9 +2747,11 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
       const ptrdiff_t base_idx = ptrdiff_t(start + lane) * ptrdiff_t(batch_stride);
       lane_bases[static_cast<size_t>(lane)] = base_idx;
       if (base_idx < 0 || base_idx > max_offset) {
-        std::cerr << "[stockham debug] batch base out of bounds: lane=" << lane
-                  << " start=" << start << " base_idx=" << base_idx
-                  << " max_offset=" << max_offset << std::endl;
+        std::ostringstream _oss;
+        _oss << "[stockham debug] batch base out of bounds: lane=" << lane
+             << " start=" << start << " base_idx=" << base_idx
+             << " max_offset=" << max_offset;
+        TraceLogger::instance().log(_oss.str());
         return;
       }
     }
@@ -2219,7 +2767,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     }
     #if EIGFFT_TRACE_STOCKHAM
     if (start == 0 && worker_id == 0) {
-      std::cout << "[stockham] load phase start" << std::endl;
+      TraceLogger::instance().log(std::string("[stockham] load phase start"));
     }
     #endif
 #if EIGFFT_TIMING
@@ -2232,9 +2780,11 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
         const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
         const ptrdiff_t idx = base_idx + off;
         if (idx < 0 || idx > max_offset) {
-          std::cerr << "[stockham] load OOB: lane=" << lane
-                    << " i=" << i << " idx=" << idx
-                    << " max=" << max_offset << std::endl;
+          std::ostringstream _oss;
+          _oss << "[stockham] load OOB: lane=" << lane
+               << " i=" << i << " idx=" << idx
+               << " max=" << max_offset;
+          TraceLogger::instance().log(_oss.str());
           return;
         }
         dest[lane] = layout.base[idx];
@@ -2242,7 +2792,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     }
     #if EIGFFT_TRACE_STOCKHAM
     if (start == 0 && worker_id == 0) {
-      std::cout << "[stockham] load phase complete" << std::endl;
+      TraceLogger::instance().log(std::string("[stockham] load phase complete"));
     }
     #endif
 
@@ -2250,7 +2800,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     Complex* out = stage_out;
     #if EIGFFT_TRACE_STOCKHAM
     if (start == 0 && worker_id == 0) {
-      std::cout << "[stockham] transform loop start" << std::endl;
+      TraceLogger::instance().log(std::string("[stockham] transform loop start"));
     }
     #endif
 #if EIGFFT_TIMING
@@ -2319,7 +2869,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     }
     #if EIGFFT_TRACE_STOCKHAM
     if (start == 0 && worker_id == 0) {
-      std::cout << "[stockham] transform loop complete" << std::endl;
+      TraceLogger::instance().log(std::string("[stockham] transform loop complete"));
     }
     #endif
 
@@ -2328,7 +2878,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
       const T scale = T(1) / T(N);
       #if EIGFFT_TRACE_STOCKHAM
       if (start == 0 && worker_id == 0) {
-        std::cout << "[stockham] store inverse phase start" << std::endl;
+        TraceLogger::instance().log(std::string("[stockham] store inverse phase start"));
       }
       #endif
   #if EIGFFT_TIMING
@@ -2341,9 +2891,11 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
           const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
           const ptrdiff_t idx = base_idx + off;
           if (idx < 0 || idx > max_offset) {
-            std::cerr << "[stockham] store OOB(inv): lane=" << lane
-                      << " i=" << i << " idx=" << idx
-                      << " max=" << max_offset << std::endl;
+            std::ostringstream _oss;
+            _oss << "[stockham] store OOB(inv): lane=" << lane
+                 << " i=" << i << " idx=" << idx
+                 << " max=" << max_offset;
+            TraceLogger::instance().log(_oss.str());
             return;
           }
           layout.base[idx] = src[lane] * scale;
@@ -2352,7 +2904,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     } else {
   #if EIGFFT_TRACE_STOCKHAM
   if (start == 0 && worker_id == 0) {
-    std::cout << "[stockham] store phase start" << std::endl;
+    TraceLogger::instance().log(std::string("[stockham] store phase start"));
   }
   #endif
 #if EIGFFT_TIMING
@@ -2365,9 +2917,11 @@ const Complex* src = final_buf + i * lane_capacity;
           const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
           const ptrdiff_t idx = base_idx + off;
           if (idx < 0 || idx > max_offset) {
-            std::cerr << "[stockham] store OOB: lane=" << lane
-                      << " i=" << i << " idx=" << idx
-                      << " max=" << max_offset << std::endl;
+            std::ostringstream _oss;
+            _oss << "[stockham] store OOB: lane=" << lane
+                 << " i=" << i << " idx=" << idx
+                 << " max=" << max_offset;
+            TraceLogger::instance().log(_oss.str());
             return;
           }
           layout.base[idx] = src[lane];
@@ -2376,7 +2930,7 @@ const Complex* src = final_buf + i * lane_capacity;
     }
     #if EIGFFT_TRACE_STOCKHAM
     if (start == 0 && worker_id == 0) {
-      std::cout << "[stockham] store phase complete" << std::endl;
+      TraceLogger::instance().log(std::string("[stockham] store phase complete"));
     }
     #endif
   };
@@ -2385,7 +2939,7 @@ const Complex* src = final_buf + i * lane_capacity;
   P.dispatcher()->parallel_for(static_cast<size_t>(B), static_cast<size_t>(lane_cols), process_chunk);
 
 #if EIGFFT_TRACE_STOCKHAM
-  std::cout << "[stockham] dispatch=" << dispatch_id << " parallel_for complete" << std::endl;
+  TraceLogger::instance().log(std::string("[stockham] dispatch=") + std::to_string(dispatch_id) + std::string(" parallel_for complete"));
 #endif
 
   if (!invariant_scratch.empty()) {
