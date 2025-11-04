@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cmath>
 #include <complex>
+#include <random>
 #include <condition_variable>
 #include <functional>
 #include <iostream>
@@ -39,6 +40,7 @@
 #include <vector>
 #include <type_traits>
 #include <chrono>
+#include <unordered_set>
 
 // #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 //   #include <xmmintrin.h>  // FTZ/DAZ
@@ -67,6 +69,109 @@ extern "C" inline void eigfft_seh_trampoline(void* p) {
 
 namespace eigfft {
 
+namespace detail {
+// Debug control for WorkerPool: allows tests to set a percentage chance that a
+// worker will simulate a crash (debug dropout). Stored as a function-local
+// atomic to avoid ODR/static initialization issues in header-only usage.
+struct WorkerPoolDebug {
+  static std::atomic<int>& dropout_rate() {
+    static std::atomic<int> v{0};
+    return v;
+  }
+  // Deterministic pattern controls
+  static std::atomic<int>& pattern_period() {
+    static std::atomic<int> v{0}; // 0 => disabled
+    return v;
+  }
+  static std::atomic<int>& pattern_on_len() {
+    static std::atomic<int> v{0}; // active window within period
+    return v;
+  }
+  static std::atomic<int>& pattern_phase() {
+    static std::atomic<int> v{0};
+    return v;
+  }
+  static std::atomic<long long>& single_index() {
+    static std::atomic<long long> v{-1}; // -1 => disabled
+    return v;
+  }
+  static std::atomic<int>& persistent_mode() {
+    static std::atomic<int> v{0}; // 0=one-shot, 1=persistent
+    return v;
+  }
+  static std::mutex& drop_mutex() {
+    static std::mutex m;
+    return m;
+  }
+  static std::unordered_set<size_t>& dropped_once() {
+    static std::unordered_set<size_t> s;
+    return s;
+  }
+  static void init_from_env() {
+    const char* env = std::getenv("FFTFREE_DEBUG_DROPOUT_PCT");
+    if (!env) return;
+    try {
+      int p = std::stoi(env);
+      if (p < 0) p = 0;
+      if (p > 100) p = 100;
+      dropout_rate().store(p);
+    } catch (...) {}
+  }
+  static void set_drop_pct(int p) { dropout_rate().store(std::clamp(p, 0, 100)); }
+  static int debug_dropout_rate_value() { return dropout_rate().load(); }
+  static void set_pattern(int period, int on_len, int phase) {
+    if (period < 0) period = 0;
+    if (on_len < 0) on_len = 0;
+    if (period > 0 && on_len > period) on_len = period;
+    pattern_period().store(period);
+    pattern_on_len().store(on_len);
+    pattern_phase().store(phase);
+  }
+  static void set_single(long long idx) { single_index().store(idx); }
+  static void clear_all() {
+    dropout_rate().store(0);
+    pattern_period().store(0);
+    pattern_on_len().store(0);
+    pattern_phase().store(0);
+    single_index().store(-1);
+    persistent_mode().store(0);
+    std::lock_guard<std::mutex> g(drop_mutex());
+    dropped_once().clear();
+  }
+};
+} // namespace detail
+
+
+// Public API to control test-only worker pool debug dropout probability.
+// Callers may set a value in [0,100] to simulate worker crashes at that
+// percentage rate. This is intended for tests only.
+inline void set_workerpool_debug_dropout(int pct) {
+  detail::WorkerPoolDebug::set_drop_pct(pct);
+}
+inline int workerpool_debug_dropout() { return detail::WorkerPoolDebug::debug_dropout_rate_value(); }
+inline bool workerpool_dropout_pattern_enabled() {
+  return detail::WorkerPoolDebug::pattern_period().load() > 0 &&
+         detail::WorkerPoolDebug::pattern_on_len().load() > 0;
+}
+inline long long workerpool_dropout_single_index() {
+  return detail::WorkerPoolDebug::single_index().load();
+}
+inline void set_workerpool_dropout_persistent(bool on) {
+  detail::WorkerPoolDebug::persistent_mode().store(on ? 1 : 0);
+}
+inline void clear_workerpool_dropout_history() {
+  std::lock_guard<std::mutex> g(detail::WorkerPoolDebug::drop_mutex());
+  detail::WorkerPoolDebug::dropped_once().clear();
+}
+// Deterministic pattern API
+inline void set_workerpool_dropout_pattern(int period, int on_len, int phase) {
+  detail::WorkerPoolDebug::set_pattern(period, on_len, phase);
+}
+inline void set_workerpool_dropout_single(long long index) {
+  detail::WorkerPoolDebug::set_single(index);
+}
+
+
 template<class T>
 struct Plan;
 
@@ -81,6 +186,15 @@ class JobDispatcher {
   using Fn = std::function<void(size_t,size_t,int)>;
   virtual ~JobDispatcher() = default;
   virtual void parallel_for(size_t total, size_t chunk, const Fn& fn) = 0;
+};
+
+// Generic algorithm-specific recovery hook interface carried per job.
+// All callbacks are optional; null pointers are treated as no-ops.
+struct RecoveryOps {
+  void (*init)(void* job_ctx, size_t chunk_count) = nullptr;
+  void (*capture_chunk)(void* job_ctx, size_t chunk_index, int worker_id) = nullptr;
+  void (*restore_range)(void* job_ctx, size_t start_chunk, size_t end_chunk) = nullptr;
+  void (*finalize)(void* job_ctx) = nullptr;
 };
 
 // Lightweight, non-blocking trace logger used only when thread tracing is
@@ -441,7 +555,12 @@ class WorkerPool {
       job_.next.store(0, std::memory_order_relaxed);
       job_.pending.store(0, std::memory_order_relaxed);
       job_.active = false;
-      total_threads_ = 1;
+      // Start with zero threads recorded so reset() will create the
+      // requested number of worker threads even when requested==1.
+      // This enforces a worker-thread-only execution model: work is
+      // always executed by pool workers, never inline on the caller
+      // thread.
+      total_threads_ = 0;
       worker_count_ = 0;
     }
 
@@ -462,7 +581,10 @@ class WorkerPool {
 
     workers_.reserve(static_cast<size_t>(worker_count_ + additional_workers));
     for (int i = 0; i < additional_workers; ++i) {
-      const int worker_id = worker_count_ + 1;
+      // Start worker ids at 0 so the first worker is id=0. The main
+      // thread is considered the waiting thread and does not participate
+      // in chunk processing when workers exist.
+      const int worker_id = worker_count_;
       workers_.emplace_back([this, worker_id]() { worker_loop(worker_id); });
       ++worker_count_;
       ++total_threads_;
@@ -496,7 +618,9 @@ class WorkerPool {
       TraceLogger::instance().log(_oss.str());
     }
 #endif
-    if (total_threads_ <= 1 || worker_count_ == 0 || total_items <= chunk_size) {
+    // Inline execution only when there are no worker threads available
+    // or the work size is so small that chunking would be pointless.
+    if (worker_count_ == 0 || total_items <= chunk_size) {
       size_t start = 0;
       while (start < total_items) {
         const size_t end = std::min(total_items, start + chunk_size);
@@ -523,8 +647,12 @@ class WorkerPool {
       job_.chunk = chunk_size;
       job_.chunk_count = chunk_count;
       job_.next.store(0, std::memory_order_relaxed);
-      // Count main + workers; everyone decrements once when done draining.
-      job_.pending.store(worker_count_ + 1, std::memory_order_relaxed);
+        // Count only worker threads; the main thread will wait and not
+        // participate in chunk processing when worker threads are present.
+        // This prevents the main thread (worker_id==0) from executing job
+        // callbacks inline and ensures debug-dropout never targets the main
+        // thread (which uses worker_id==0).
+        job_.pending.store(worker_count_, std::memory_order_relaxed);
       job_.active = true;
 #if EIGFFT_TRACE_THREADS
   {
@@ -539,21 +667,10 @@ class WorkerPool {
     }
     cv_job_.notify_all();
 
-    drain_chunks(0);
-
-    // Main thread finished. Decrement and wait ATOMICALLY.
+    // Don't process chunks on the main thread; wait for workers to finish.
     std::unique_lock<std::mutex> lock(mutex_);
-    const int remaining = job_.pending.fetch_sub(1, std::memory_order_acq_rel);
-
-    if (remaining > 1) {
-      // We are NOT the last thread, so wait for the last one.
-      cv_done_.wait(lock, [&] { return !job_.active; });
-    } else {
-      // We ARE the last thread. Close the job and notify anyone waiting.
-      job_.active = false;
-      cv_done_.notify_one();
-    }
-  // At this point all workers (and main thread) have finished draining chunks.
+    cv_done_.wait(lock, [&] { return !job_.active; });
+  // At this point all workers have finished draining chunks.
   // Clear the job callback under the mutex to ensure no worker observes a
   // cleared fn while still able to enter the call site. Use atomic_store
   // on the shared_ptr so readers using atomic_load see a consistent null.
@@ -568,7 +685,25 @@ class WorkerPool {
   // worker experiences a crash while executing a chunk. The restore callback
   // receives the start/end indices of the failed chunk(s).
   template <class Fn>
-  void parallel_for_with_restore(size_t total_items, size_t chunk, Fn&& fn, std::function<void(size_t,size_t)> restore_fn) {
+  void parallel_for_with_restore(size_t total_items, size_t chunk, Fn&& fn,
+                                 std::function<void(size_t,size_t)> restore_fn) {
+    parallel_for_with_restore_ex(total_items,
+                                 chunk,
+                                 std::forward<Fn>(fn),
+                                 std::move(restore_fn),
+                                 RecoveryOps{},
+                                 nullptr);
+  }
+
+  // Extended API with algorithm-specific recovery hooks. Existing behavior is
+  // preserved when hooks are null (no-ops).
+  template <class Fn>
+  void parallel_for_with_restore_ex(size_t total_items,
+                                    size_t chunk,
+                                    Fn&& fn,
+                                    std::function<void(size_t,size_t)> restore_fn,
+                                    RecoveryOps ops,
+                                    void* job_ctx) {
     if (total_items == 0) return;
     if (chunk == 0) chunk = 1;
     const size_t chunk_size = chunk;
@@ -576,22 +711,28 @@ class WorkerPool {
 #if EIGFFT_TRACE_THREADS
     {
       std::ostringstream _oss;
-      _oss << "[pool] parallel_for begin total=" << total_items
+      _oss << "[pool] parallel_for_ex begin total=" << total_items
            << " chunk=" << chunk_size
            << " worker_count=" << worker_count_
            << " total_threads=" << total_threads_;
       TraceLogger::instance().log(_oss.str());
     }
 #endif
-    if (total_threads_ <= 1 || worker_count_ == 0 || total_items <= chunk_size) {
+    if (worker_count_ == 0 || total_items <= chunk_size) {
       size_t start = 0;
+      const size_t chunk_count = (total_items + chunk_size - 1) / chunk_size;
+      if (ops.init) { try { ops.init(job_ctx, chunk_count); } catch(...){} }
+      size_t chunk_index = 0;
       while (start < total_items) {
         const size_t end = std::min(total_items, start + chunk_size);
+        if (ops.capture_chunk) { try { ops.capture_chunk(job_ctx, chunk_index, 0); } catch(...){} }
         wrapped(start, end, 0);
         start = end;
+        ++chunk_index;
       }
+      if (ops.finalize) { try { ops.finalize(job_ctx); } catch(...){} }
 #if EIGFFT_TRACE_THREADS
-  TraceLogger::instance().log(std::string("[pool] parallel_for completed inline"));
+      TraceLogger::instance().log(std::string("[pool] parallel_for_ex completed inline"));
 #endif
       return;
     }
@@ -607,41 +748,39 @@ class WorkerPool {
       job_.chunk = chunk_size;
       job_.chunk_count = chunk_count;
       job_.next.store(0, std::memory_order_relaxed);
-      job_.pending.store(worker_count_ + 1, std::memory_order_relaxed);
+      job_.pending.store(worker_count_, std::memory_order_relaxed);
       job_.active = true;
+      job_.ops = ops;
+      job_.job_ctx = job_ctx;
 #if EIGFFT_TRACE_THREADS
-  {
-    std::ostringstream _oss;
-    _oss << "[pool] armed job fn=" << static_cast<const void*>(callable_ptr.get())
-         << " total=" << job_.total
-         << " chunks=" << job_.chunk_count
-         << " pending=" << job_.pending.load();
-    TraceLogger::instance().log(_oss.str());
-  }
+      {
+        std::ostringstream _oss;
+        _oss << "[pool] armed job(ex) fn=" << static_cast<const void*>(callable_ptr.get())
+             << " total=" << job_.total
+             << " chunks=" << job_.chunk_count
+             << " pending=" << job_.pending.load();
+        TraceLogger::instance().log(_oss.str());
+      }
 #endif
+      if (job_.ops.init) { try { job_.ops.init(job_.job_ctx, job_.chunk_count); } catch(...){} }
     }
     cv_job_.notify_all();
 
-    drain_chunks(0);
-
     std::unique_lock<std::mutex> lock(mutex_);
-    const int remaining = job_.pending.fetch_sub(1, std::memory_order_acq_rel);
+    cv_done_.wait(lock, [&] { return !job_.active; });
 
-    if (remaining > 1) {
-      cv_done_.wait(lock, [&] { return !job_.active; });
-    } else {
-      job_.active = false;
-      cv_done_.notify_one();
-    }
+    if (job_.ops.finalize) { try { job_.ops.finalize(job_.job_ctx); } catch(...){} }
 
     std::atomic_store(&job_.fn, std::shared_ptr<Job::FnType>(nullptr));
     std::atomic_store(&job_.on_failure, std::shared_ptr<Job::RestoreType>(nullptr));
+    job_.ops = RecoveryOps{};
+    job_.job_ctx = nullptr;
 #if EIGFFT_TRACE_THREADS
-    TraceLogger::instance().log(std::string("[pool] parallel_for finished"));
+    TraceLogger::instance().log(std::string("[pool] parallel_for_ex finished"));
 #endif
   }
 
- private:
+  private:
   struct Job {
     using FnType = std::function<void(size_t, size_t, int)>;
     using RestoreType = std::function<void(size_t, size_t)>;
@@ -658,6 +797,9 @@ class WorkerPool {
     bool active = false;
     // Optional per-job restore callback published atomically (may be null).
     std::shared_ptr<RestoreType> on_failure;
+    // Algorithm-specific recovery hooks and opaque context
+    RecoveryOps ops{};
+    void* job_ctx = nullptr;
   };
 
   void shutdown() {
@@ -746,18 +888,93 @@ class WorkerPool {
 #endif
 
   #define EIGFFT_JOB_RETRY_COUNT 2
+  // Build a small "safe" wrapper that can inject a debug dropout (simulated
+  // worker crash) at a configured probability. This lets tests force a
+  // per-worker failure deterministically via runtime setter without touching
+  // production code paths. The wrapper captures the shared callable so it
+  // remains valid across the SEH trampoline and worker retry loops.
+  std::function<void(size_t,size_t,int)> invoking_fn = nullptr;
+  {
+    // Capture the loaded shared_ptr locally to keep it alive.
+    auto captured_fn = fn;
+    // Capture 'this' so the dropout injection can know whether the pool
+    // actually has worker threads. We allow dropout only when worker
+    // threads exist; inline execution (worker_count_ == 0) remains
+    // immune unless explicitly enabled via a debug flag.
+    invoking_fn = [this, captured_fn](size_t s, size_t e, int w) {
+  // Decide deterministic dropout first (single index / stripe pattern),
+  // then fall back to probabilistic rate.
+  bool do_drop = false;
+  // Compute chunk index from start offset and configured chunk size
+  size_t idx = 0;
+  const size_t chunk_sz = (job_.chunk == 0) ? 1 : job_.chunk;
+  idx = s / chunk_sz;
+
+  long long single = eigfft::detail::WorkerPoolDebug::single_index().load();
+  if (single >= 0 && static_cast<long long>(idx) == single) {
+    do_drop = true;
+  } else {
+    int period = eigfft::detail::WorkerPoolDebug::pattern_period().load();
+    int onlen = eigfft::detail::WorkerPoolDebug::pattern_on_len().load();
+    int phase = eigfft::detail::WorkerPoolDebug::pattern_phase().load();
+    if (period > 0 && onlen > 0) {
+      long long pos = static_cast<long long>(idx) + static_cast<long long>(phase);
+      int mod = static_cast<int>((pos % period + period) % period);
+      if (mod < onlen) do_drop = true;
+    }
+  }
+  if (!do_drop) {
+    int rate = eigfft::detail::WorkerPoolDebug::debug_dropout_rate_value();
+    if (rate > 0) {
+      thread_local std::mt19937_64 tls_rng((unsigned)std::hash<std::thread::id>()(std::this_thread::get_id()) ^ 0x9e3779b97f4a7c15ULL);
+      std::uniform_int_distribution<int> dist(1, 100);
+      if (dist(tls_rng) <= rate) do_drop = true;
+    }
+  }
+  if (do_drop) {
+    // Enforce one-shot by default: only drop once per chunk index unless
+    // persistent mode is explicitly enabled for stress testing.
+    if (eigfft::detail::WorkerPoolDebug::persistent_mode().load() == 0) {
+      std::lock_guard<std::mutex> g(eigfft::detail::WorkerPoolDebug::drop_mutex());
+      auto &seen = eigfft::detail::WorkerPoolDebug::dropped_once();
+      if (seen.find(idx) != seen.end()) {
+        do_drop = false;
+      } else {
+        seen.insert(idx);
+      }
+    }
+  }
+  if (do_drop) {
+    std::ostringstream _oss;
+    _oss << "[pool] DEBUG_DROP: worker " << w << " simulating crash s=" << s << " e=" << e
+         << " idx=" << idx;
+    TraceLogger::instance().log(_oss.str());
+    // Simulate a crash.
+#if defined(_WIN32)
+    volatile int* p = nullptr; *p = 0;
+#else
+    throw std::runtime_error("debug-dropout simulated crash");
+#endif
+  }
+      // Invoke the original callable
+      (*captured_fn)(s, e, w);
+    };
+  }
   // Invoke the job callable inside a platform-specific containment block so
   // an access violation or other SEH exception from the job does not unwind
   // out of the worker thread and kill the process. On Windows with MSVC we
   // use SEH (delegated to fftfree_run_with_seh) and produce a minidump; on
   // other platforms we catch C++ exceptions and log them. In both cases we
   // attempt a small number of restore+retry cycles when a failure occurs.
-#if defined(_WIN32) && defined(_MSC_VER)
+  #if defined(_WIN32) && defined(_MSC_VER)
   // Use fftfree_run_with_seh and a heap-copied std::function for trampoline
   // invocation so MSVC's SEH rules are satisfied.
   {
-    SEHInvokeCtx* ctx = new SEHInvokeCtx{ new std::function<void(size_t,size_t,int)>(*fn), start, end, worker_id };
-    int ex = fftfree::fftfree_run_with_seh(&eigfft_seh_trampoline, static_cast<void*>(ctx));
+  // Use the invoking_fn wrapper so debug-dropout injection takes effect
+  // Call capture hook just before invoking work for this chunk
+  try { if (job_.ops.capture_chunk) job_.ops.capture_chunk(job_.job_ctx, index, worker_id); } catch (...) {}
+  SEHInvokeCtx* ctx = new SEHInvokeCtx{ new std::function<void(size_t,size_t,int)>(invoking_fn), start, end, worker_id };
+  int ex = fftfree::fftfree_run_with_seh(&eigfft_seh_trampoline, static_cast<void*>(ctx));
     delete ctx->heap_fn;
     delete ctx;
     if (ex) {
@@ -766,33 +983,93 @@ class WorkerPool {
            << " start=" << start << " end=" << end;
       TraceLogger::instance().log(_oss.str());
       auto restore_cb = std::atomic_load(&job_.on_failure);
-      if (restore_cb) (*restore_cb)(start, end);
+      if (restore_cb) {
+#if defined(EIGFFT_RESTORE_CONSOLE_LOGS)
+  std::fprintf(stderr, "[restore] invoking restore worker=%d idx=%zu start=%zu end=%zu\n", worker_id, index, start, end);
+#endif
+#if EIGFFT_TRACE_THREADS
+  {
+    std::ostringstream _oss2;
+    _oss2 << "[pool] invoking restore callback worker=" << worker_id << " idx=" << index
+    << " start=" << start << " end=" << end;
+    TraceLogger::instance().log(_oss2.str());
+  }
+#endif
+  // Algorithm-specific restore prior to legacy callback
+  try {
+    if (job_.ops.restore_range) {
+      const size_t start_chunk = (job_.chunk == 0) ? 0 : (start / job_.chunk);
+      const size_t end_chunk = (job_.chunk == 0) ? 0 : ((end + job_.chunk - 1) / job_.chunk);
+      job_.ops.restore_range(job_.job_ctx, start_chunk, end_chunk);
+    }
+  } catch (...) {}
+  (*restore_cb)(start, end);
+#if defined(EIGFFT_RESTORE_CONSOLE_LOGS)
+  std::fprintf(stderr, "[restore] completed restore worker=%d idx=%zu start=%zu end=%zu\n", worker_id, index, start, end);
+#endif
+#if EIGFFT_TRACE_THREADS
+  TraceLogger::instance().log(std::string("[pool] restore callback completed"));
+#endif
+      }
       // Attempt retries after restore using the SEH runner again.
       for (int attempt = 0; attempt < EIGFFT_JOB_RETRY_COUNT; ++attempt) {
         std::ostringstream _oss2;
         _oss2 << "[pool] worker " << worker_id << " retry attempt=" << (attempt+1) << " idx=" << index;
         TraceLogger::instance().log(_oss2.str());
-        SEHInvokeCtx* ctx2 = new SEHInvokeCtx{ new std::function<void(size_t,size_t,int)>(*fn), start, end, worker_id };
+#if defined(EIGFFT_RESTORE_CONSOLE_LOGS)
+        std::fprintf(stderr, "[restore] retry attempt=%d worker=%d idx=%zu\n", (attempt+1), worker_id, index);
+#endif
+        SEHInvokeCtx* ctx2 = new SEHInvokeCtx{ new std::function<void(size_t,size_t,int)>(invoking_fn), start, end, worker_id };
         int ex2 = fftfree::fftfree_run_with_seh(&eigfft_seh_trampoline, static_cast<void*>(ctx2));
         delete ctx2->heap_fn;
         delete ctx2;
         if (!ex2) {
           TraceLogger::instance().log(std::string("[pool] worker retry succeeded"));
+#if defined(EIGFFT_RESTORE_CONSOLE_LOGS)
+          std::fprintf(stderr, "[restore] retry succeeded worker=%d idx=%zu attempt=%d\n", worker_id, index, (attempt+1));
+#endif
           break;
         }
-        if (attempt + 1 < EIGFFT_JOB_RETRY_COUNT && restore_cb) (*restore_cb)(start, end);
+        if (attempt + 1 < EIGFFT_JOB_RETRY_COUNT && restore_cb) {
+#if EIGFFT_TRACE_THREADS
+          std::ostringstream _oss3;
+          _oss3 << "[pool] retry invoking restore callback attempt=" << (attempt+1) << " worker=" << worker_id << " idx=" << index;
+          TraceLogger::instance().log(_oss3.str());
+#endif
+          // Algorithm-specific restore prior to legacy callback
+          try {
+            if (job_.ops.restore_range) {
+              const size_t start_chunk = (job_.chunk == 0) ? 0 : (start / job_.chunk);
+              const size_t end_chunk = (job_.chunk == 0) ? 0 : ((end + job_.chunk - 1) / job_.chunk);
+              job_.ops.restore_range(job_.job_ctx, start_chunk, end_chunk);
+            }
+          } catch (...) {}
+          (*restore_cb)(start, end);
+#if defined(EIGFFT_RESTORE_CONSOLE_LOGS)
+          std::fprintf(stderr, "[restore] retry restore completed worker=%d idx=%zu attempt=%d\n", worker_id, index, (attempt+1));
+#endif
+#if EIGFFT_TRACE_THREADS
+          TraceLogger::instance().log(std::string("[pool] retry restore completed"));
+#endif
+        }
         if (attempt + 1 == EIGFFT_JOB_RETRY_COUNT) {
           TraceLogger::instance().log(std::string("[pool] worker persistent failure after retries"));
+#if defined(EIGFFT_RESTORE_CONSOLE_LOGS)
+          std::fprintf(stderr, "[restore] persistent failure after retries worker=%d idx=%zu\n", worker_id, index);
+#endif
         }
       }
     }
   }
-#else
+  #else
   // Non-Windows: catch C++ exceptions and attempt restore+retry cycles.
   int attempt = 0;
   for (;;) {
     try {
-      (*fn)(start, end, worker_id);
+      // Call the wrapper so injected debug-dropout is executed.
+      // Capture just before invoking work for this chunk
+      try { if (job_.ops.capture_chunk) job_.ops.capture_chunk(job_.job_ctx, index, worker_id); } catch (...) {}
+      invoking_fn(start, end, worker_id);
       break; // success
     } catch (const std::exception& e) {
       std::ostringstream _oss;
@@ -806,7 +1083,32 @@ class WorkerPool {
       TraceLogger::instance().log(_oss.str());
     }
     auto restore_cb = std::atomic_load(&job_.on_failure);
-    if (restore_cb) (*restore_cb)(start, end);
+    if (restore_cb) {
+#if defined(EIGFFT_RESTORE_CONSOLE_LOGS)
+  std::fprintf(stderr, "[restore] invoking restore (non-win) worker=%d idx=%zu start=%zu end=%zu\n", worker_id, index, start, end);
+#endif
+#if EIGFFT_TRACE_THREADS
+  std::ostringstream _oss4;
+  _oss4 << "[pool] invoking restore callback (non-win) worker=" << worker_id << " idx=" << index
+    << " start=" << start << " end=" << end;
+  TraceLogger::instance().log(_oss4.str());
+#endif
+  // Algorithm-specific restore prior to legacy callback
+  try {
+    if (job_.ops.restore_range) {
+      const size_t start_chunk = (job_.chunk == 0) ? 0 : (start / job_.chunk);
+      const size_t end_chunk = (job_.chunk == 0) ? 0 : ((end + job_.chunk - 1) / job_.chunk);
+      job_.ops.restore_range(job_.job_ctx, start_chunk, end_chunk);
+    }
+  } catch (...) {}
+  (*restore_cb)(start, end);
+#if defined(EIGFFT_RESTORE_CONSOLE_LOGS)
+  std::fprintf(stderr, "[restore] restore completed (non-win) worker=%d idx=%zu start=%zu end=%zu\n", worker_id, index, start, end);
+#endif
+#if EIGFFT_TRACE_THREADS
+  TraceLogger::instance().log(std::string("[pool] restore callback completed (non-win)"));
+#endif
+    }
     ++attempt;
     if (attempt > EIGFFT_JOB_RETRY_COUNT) {
       TraceLogger::instance().log(std::string("[pool] worker persistent failure after retries"));
@@ -2112,58 +2414,9 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   }
 
   const int chunk_count = (B + active_lane_cols - 1) / active_lane_cols;
-  // Optional ingestion precompute: precompute column pointer arrays for each
-  // chunk and optionally store backups of the column data to allow recovery
-  // if a chunk fails during processing. The precomputed chunks are published
-  // via atomic shared_ptr and workers will use them when available.
-  struct ChunkWork {
-    int col0;
-    int width;
-    std::vector<Complex*> columns;
-    // backup per-column: each vector contains N elements (axis length)
-    std::vector<std::vector<Complex>> backups;
-    ChunkWork(int c0, int w) : col0(c0), width(w) {}
-  };
-
-  // prechunks_owner keeps ownership; prechunk_ptrs publishes raw pointers
-  // atomically for low-overhead consumer reads.
-  std::vector<std::shared_ptr<ChunkWork>> prechunks_owner;
-  std::unique_ptr<std::atomic<ChunkWork*>[]> prechunk_ptrs;
-  if (P.tuning.use_ingest) {
-    prechunks_owner.resize(static_cast<size_t>(chunk_count));
-    prechunk_ptrs.reset(new std::atomic<ChunkWork*>[static_cast<size_t>(chunk_count)]);
-    for (size_t i = 0; i < static_cast<size_t>(chunk_count); ++i) prechunk_ptrs[i].store(nullptr);
-    // Spawn a background ingester thread to populate prechunks in order.
-    std::thread ingester([&]() {
-      for (int ci = 0; ci < chunk_count; ++ci) {
-        const int col = ci * active_lane_cols;
-        const int width = std::min(active_lane_cols, B - col);
-        if (width <= 0) {
-    prechunk_ptrs[static_cast<size_t>(ci)].store(nullptr);
-          continue;
-        }
-        auto cw = std::make_shared<ChunkWork>(col, width);
-        cw->columns.resize(static_cast<size_t>(width));
-        for (int lane = 0; lane < width; ++lane) {
-          const Eigen::Index batch_index = Eigen::Index(col + lane);
-          cw->columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
-        }
-        if (P.tuning.ingest_backup) {
-          cw->backups.resize(static_cast<size_t>(width));
-          for (int lane = 0; lane < width; ++lane) {
-            auto& b = cw->backups[static_cast<size_t>(lane)];
-            b.resize(static_cast<size_t>(N));
-            Complex* colptr = cw->columns[static_cast<size_t>(lane)];
-            for (int i = 0; i < N; ++i) b[static_cast<size_t>(i)] = colptr[Eigen::Index(i) * axis_stride];
-          }
-        }
-  prechunks_owner[static_cast<size_t>(ci)] = cw;
-  prechunk_ptrs[static_cast<size_t>(ci)].store(cw.get());
-      }
-    });
-    // Detach ingester; chunks are published atomically and used when ready.
-    ingester.detach();
-  }
+  // Note: background ingestion/precompute removed. Column pointer arrays are
+  // computed inline by worker tasks. This avoids detached threads and ensures
+  // all work is scheduled via the Plan dispatcher / worker pool.
   // Unified trace for layout/stride info (no-op unless EIGFFT_TRACE_LAYOUT=1)
   detail::trace_layout_info<T>("cooleytukey", layout, axis_stride, batch_stride, static_cast<int>(active_lane_cols), B);
 #if EIGFFT_TRACE_THREADS
@@ -2202,16 +2455,10 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   }
 #endif
         if (width <= 0) continue;
-        // If ingestion precomputed column pointers are available use them.
-        ChunkWork* cw = nullptr;
-        if (P.tuning.use_ingest) cw = prechunk_ptrs[static_cast<size_t>(chunk)].load(std::memory_order_acquire);
-        if (cw && cw->width == width) {
-          for (int lane = 0; lane < width; ++lane) columns[static_cast<size_t>(lane)] = cw->columns[static_cast<size_t>(lane)];
-        } else {
-          for (int lane = 0; lane < width; ++lane) {
-            const Eigen::Index batch_index = Eigen::Index(col + lane);
-            columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
-          }
+        // Compute column pointers inline (no background ingestion).
+        for (int lane = 0; lane < width; ++lane) {
+          const Eigen::Index batch_index = Eigen::Index(col + lane);
+          columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
         }
         for (int i = 0; i < N; ++i) {
           const int src = bitrev[i];
@@ -2225,29 +2472,8 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
         }
       }
     };
-    if (P.tuning.use_ingest) {
-      auto restore_cb = [&](size_t start, size_t end) {
-        for (size_t chunk = start; chunk < end; ++chunk) {
-          ChunkWork* cw = prechunk_ptrs[static_cast<size_t>(chunk)].load(std::memory_order_acquire);
-          if (!cw) continue;
-          if (!P.tuning.ingest_backup) continue;
-          const int col0 = cw->col0;
-          const int width = cw->width;
-          for (int lane = 0; lane < width; ++lane) {
-            Complex* dst = layout.base + static_cast<Eigen::Index>(col0 + lane) * batch_stride;
-            const auto& backup = cw->backups[static_cast<size_t>(lane)];
-            for (int i = 0; i < N; ++i) dst[Eigen::Index(i) * axis_stride] = backup[static_cast<size_t>(i)];
-          }
-        }
-      };
-      if (auto wp = dynamic_cast<WorkerPool*>(P.dispatcher())) {
-        wp->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, permute_fn, restore_cb);
-      } else {
-        P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, permute_fn);
-      }
-    } else {
-      P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, permute_fn);
-    }
+    // Dispatch permute work via the Plan dispatcher (worker pool or inline).
+    P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, permute_fn);
   }
   
 #if EIGFFT_TRACE_THREADS
@@ -2297,15 +2523,10 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   }
 #endif
         if (width <= 0) continue;
-        ChunkWork* cw = nullptr;
-        if (P.tuning.use_ingest) cw = prechunk_ptrs[static_cast<size_t>(chunk)].load(std::memory_order_acquire);
-        if (cw && cw->width == width) {
-          for (int lane = 0; lane < width; ++lane) columns[static_cast<size_t>(lane)] = cw->columns[static_cast<size_t>(lane)];
-        } else {
-          for (int lane = 0; lane < width; ++lane) {
-            const Eigen::Index batch_index = Eigen::Index(col + lane);
-            columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
-          }
+        // Compute column pointers inline (no background ingestion).
+        for (int lane = 0; lane < width; ++lane) {
+          const Eigen::Index batch_index = Eigen::Index(col + lane);
+          columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
         }
         for (int k = 0; k < half; ++k) {
           const Complex w = P.W[k * step];
@@ -2383,29 +2604,8 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
       TraceLogger::instance().log(_oss.str());
     }
 #endif
-    if (P.tuning.use_ingest) {
-      auto restore_cb = [&](size_t start, size_t end) {
-        for (size_t chunk = start; chunk < end; ++chunk) {
-          ChunkWork* cw = prechunk_ptrs[static_cast<size_t>(chunk)].load(std::memory_order_acquire);
-          if (!cw) continue;
-          if (!P.tuning.ingest_backup) continue;
-          const int col0 = cw->col0;
-          const int width = cw->width;
-          for (int lane = 0; lane < width; ++lane) {
-            Complex* dst = layout.base + static_cast<Eigen::Index>(col0 + lane) * batch_stride;
-            const auto& backup = cw->backups[static_cast<size_t>(lane)];
-            for (int i = 0; i < N; ++i) dst[Eigen::Index(i) * axis_stride] = backup[static_cast<size_t>(i)];
-          }
-        }
-      };
-      if (auto wp = dynamic_cast<WorkerPool*>(P.dispatcher())) {
-        wp->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, stage_chunk, restore_cb);
-      } else {
-        P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, stage_chunk);
-      }
-    } else {
-      P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, stage_chunk);
-    }
+    // Dispatch stage work via the Plan dispatcher (worker pool or inline).
+    P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, stage_chunk);
 #if EIGFFT_TRACE_THREADS
     {
       std::ostringstream _oss;
@@ -2737,6 +2937,17 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     Complex* stage_in = state->arena.stockham_ping + slot * buffer_stride;
     Complex* stage_out = state->arena.stockham_pong + slot * buffer_stride;
     std::ptrdiff_t* lane_bases = state->arena.stockham_lane_bases + slot * lane_stride;
+#if defined(EIGFFT_RUNTIME_INSTRUMENTATION)
+  // Print per-worker slot mapping and arena pointers to detect aliasing.
+  std::cerr << "[stockham-instr] worker=" << worker_id
+        << " slot=" << slot
+        << " arena=" << static_cast<const void*>(&state->arena)
+        << " ping=" << static_cast<const void*>(state->arena.stockham_ping)
+        << " pong=" << static_cast<const void*>(state->arena.stockham_pong)
+        << " lane_bases=" << static_cast<const void*>(state->arena.stockham_lane_bases)
+        << " buffer_stride=" << buffer_stride
+        << " lane_stride=" << lane_stride << "\n";
+#endif
     const ptrdiff_t max_offset = (layout.batch_size > 0 && layout.axis_size > 0)
                                      ? (ptrdiff_t(layout.batch_size - 1) *
                                             ptrdiff_t(layout.batch_stride) +

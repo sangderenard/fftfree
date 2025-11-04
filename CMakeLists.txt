@@ -42,6 +42,7 @@ option(FFTFREE_OPENMP "Enable OpenMP" ON)
 option(FFTFREE_FAST_MATH "Enable fast-math" ON)
 option(EIGFFT_TIMING "Enable timing instrumentation (compile-time)" OFF)
 option(EIGFFT_TRACE_THREADS "Enable detailed thread/worker pool tracing" OFF)
+option(EIGFFT_RESTORE_CONSOLE_LOGS "Enable concise restore console logs (compile-time)" OFF)
 
 # Detect the highest SIMD level actually supported by the host CPU when AUTO is
 # requested on MSVC.  Using compiler-flag probes alone is insufficient because
@@ -139,6 +140,16 @@ function(fftfree_apply_target_options target)
     target_compile_definitions(${target} PRIVATE EIGFFT_TRACE_THREADS=1)
   endif()
 
+  if (EIGFFT_RESTORE_CONSOLE_LOGS)
+    # Propagate the compile-time restore-console macro into targets so
+    # builds can enable concise stderr messages for restore lifecycle events.
+    target_compile_definitions(${target} PRIVATE EIGFFT_RESTORE_CONSOLE_LOGS=1)
+  endif()
+  # Silence MSVC's deprecation warnings for legacy CRT APIs used in low-level
+  # plumbing (e.g., getenv/fopen) without altering behavior. These are
+  # intentionally used in a few spots where portability and simplicity matter.
+  target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
+
   if (MSVC)
     set(_fftf_native_flag "")
     set(_fftf_native_flag_message "default (compiler-defined)")
@@ -220,7 +231,7 @@ function(fftfree_apply_target_options target)
 endfunction()
 
 
-add_library(fft_cffi SHARED fft_cffi.cpp eigen_fft.hpp plan_support.hpp butterfly/butterfly_base.hpp butterfly/butterfly_factory.hpp butterfly/butterfly_radix2_dit.hpp butterfly/butterfly_radix2_dif.hpp butterfly/butterfly_radix4_dit.hpp)
+add_library(fft_cffi SHARED fft_cffi.cpp eigen_fft.hpp plan_support.hpp phase_infer.hpp butterfly/butterfly_base.hpp butterfly/butterfly_factory.hpp butterfly/butterfly_radix2_dit.hpp butterfly/butterfly_radix2_dif.hpp butterfly/butterfly_radix4_dit.hpp)
 fftfree_apply_target_options(fft_cffi)
 target_compile_definitions(fft_cffi PRIVATE FFT_CFFI_EXPORTS)
 
@@ -241,3 +252,9 @@ add_test(NAME fftfree.threads_trace COMMAND fft_threads_trace)
 add_executable(fft_restore_test tests/restore_test.cpp)
 fftfree_apply_target_options(fft_restore_test)
 add_test(NAME fftfree.restore_test COMMAND fft_restore_test)
+
+# CFFI-driven restore test (instrumented) — build so we can run the ASCII-grid
+add_executable(restore_test_cffi tests/restore_test_cffi.cpp)
+fftfree_apply_target_options(restore_test_cffi)
+target_link_libraries(restore_test_cffi PRIVATE fft_cffi)
+add_test(NAME fftfree.restore_test_cffi COMMAND restore_test_cffi)

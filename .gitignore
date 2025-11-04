@@ -39,3 +39,4 @@ __pycache__/
 *.log
 *.png
 *.dmp
+*.pt

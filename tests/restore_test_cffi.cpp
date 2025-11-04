@@ -82,8 +82,9 @@ int main(int argc, char** argv) {
     else if (a == "--dropout-persistent") dropout_persistent = true;
   }
   if (quick) { N = 256; B = 8; }
-  // Ensure we have enough outer workers to exercise the coordinator path
-  if (threads < 2) threads = 2;
+  // Clamp to at least one thread but otherwise honor the requested value so
+  // single-thread baselines can disable worker dropouts when needed.
+  if (threads < 1) threads = 1;
 
   // Prepare input PCM: B consecutive frames of length N.
   const size_t pcm_len = static_cast<size_t>(N) * static_cast<size_t>(B);

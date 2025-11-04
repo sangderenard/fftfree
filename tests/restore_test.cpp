@@ -13,6 +13,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 using namespace eigfft;
 
@@ -39,9 +40,14 @@ int run_transform_test(int N, int B, const std::string& alg, int threads) {
 
   PoolDispatcherLocal dispatcher_local;
   std::unique_ptr<WorkerPool> pool;
-  if (threads > 1) {
+  // Always construct a WorkerPool when the test requests at least one
+  // thread so we exercise the pool code paths even for threads==1.
+  if (threads >= 1) {
     pool = std::make_unique<WorkerPool>(threads);
     dispatcher_local.pool = pool.get();
+    try {
+      std::cout << "POOL_CREATED: size=" << pool->size() << " (threads requested=" << threads << ")\n";
+    } catch (...) {}
   }
 
   // Create plan for forward
@@ -181,6 +187,8 @@ int main(int argc, char** argv) {
   int threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
   bool quick = false;
 
+  int debug_dropout = 0;
+  bool disable_crash_reports = false;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a.rfind("--N=", 0) == 0) N = std::stoi(a.substr(4));
@@ -189,9 +197,18 @@ int main(int argc, char** argv) {
     else if (a.rfind("--precision=", 0) == 0) prec = a.substr(12);
     else if (a.rfind("--threads=", 0) == 0) threads = std::stoi(a.substr(10));
     else if (a == "--quick") quick = true;
+    else if (a.rfind("--debug-dropout=", 0) == 0) debug_dropout = std::stoi(a.substr(16));
+    else if (a == "--disable-crash-reports" || a == "--silent-crash") disable_crash_reports = true;
   }
 
   if (quick) { N = 512; B = 512; }
+  if (debug_dropout != 0) eigfft::set_workerpool_debug_dropout(debug_dropout);
+  // Honor test-level opt-out for crash diagnostics: set env var so
+  // crash_handler::install_crash_handler will early-return.
+  if (disable_crash_reports) {
+    // Prefer API-level control: request silent crash handler via runtime flag.
+    fftfree::set_crash_handler_silent(true);
+  }
   // Normalize alg token
   if (alg == "ct") alg = "cooleytukey"; 
   if (alg == "cooleytukey") alg = "ct"; // keep "ct" or "stockham" comparison

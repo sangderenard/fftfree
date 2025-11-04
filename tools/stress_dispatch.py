@@ -61,7 +61,8 @@ size_t fft_execute_batched(void* handle,
                            size_t pcm_len,
                            float* out_real,
                            float* out_imag,
-                           float* out_mag,
+                                          int inner_threads,
+                                          int silent_crash_reports);
                            int pad_mode,
                            size_t max_frames);
 size_t fft_ctx_worker_threads(void* handle);
@@ -130,7 +131,7 @@ def child_run(lib_path: str, cfg: dict, iters: int, seed: int) -> int:
         # create random pcm
         pcm = (rng.randn(pcm_len).astype(np.float32) * 0.1).copy()
         if use_full:
-            ctx = lib.fft_init_full(N, threads, lanes, 0, kernel_code, 0, ffi.NULL, 0, pad_code, W, H, 1, 0, 0, 0, 0, allow_outer, allow_inner, inner_threads)
+            ctx = lib.fft_init_full(N, threads, lanes, 0, kernel_code, 0, ffi.NULL, 0, pad_code, W, H, 1, 0, 0, 0, 0, allow_outer, allow_inner, inner_threads, 0)
         else:
             ctx = lib.fft_init_ex(N, threads, lanes, 0, kernel_code, 0, ffi.NULL, 0, pad_code, W, H, 1)
         if ctx == ffi.NULL:

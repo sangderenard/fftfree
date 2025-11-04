@@ -15,6 +15,12 @@
 
 namespace eigfft {
 
+#ifndef EIGFFT_RUNTIME_INSTRUMENTATION
+// Enable to print lightweight runtime instrumentation for debugging
+// worker <-> arena slot mappings. Remove or undefine for normal builds.
+#define EIGFFT_RUNTIME_INSTRUMENTATION 1
+#endif
+
 struct PlanRuntimeConfig {
   int threads = 4;
   int lanes = 2;
@@ -506,6 +512,7 @@ class PlanCache {
   struct Slot {
     std::size_t index = 0;
     Plan<Scalar>* plan = nullptr;
+    PlanEnvironment<Scalar>* env = nullptr;
   };
 
   static PlanRuntimeConfig normalize_config(const PlanRuntimeConfig& cfg) {
@@ -562,7 +569,17 @@ class PlanCache {
       auto& entry = bucket.entries[i];
       if (!entry.in_use) {
         entry.in_use = true;
-        return Slot{i, &entry.env->plan()};
+        Slot s{i, &entry.env->plan(), entry.env.get()};
+#if defined(EIGFFT_RUNTIME_INSTRUMENTATION)
+        // Lightweight instrumentation: print which cache entry and arena
+        // address was handed out for debugging concurrent slot aliasing.
+        std::cerr << "[plancache] reuse entry index=" << s.index
+                  << " env=" << static_cast<const void*>(s.env)
+                  << " arena=" << static_cast<const void*>(&s.env->arena())
+                  << " threads=" << s.env->threads()
+                  << " lanes=" << s.env->lanes() << "\n";
+#endif
+        return s;
       }
     }
 
@@ -570,9 +587,17 @@ class PlanCache {
     PlanRuntimeConfig cfg = runtime_cfg;
     cfg.inverse = key.inverse;
     env->initialize(key.N, key.inverse, cfg);
-    bucket.entries.push_back({std::move(env), true});
-    CachedEntry& entry = bucket.entries.back();
-    return Slot{bucket.entries.size() - 1, &entry.env->plan()};
+  bucket.entries.push_back({std::move(env), true});
+  CachedEntry& entry = bucket.entries.back();
+  Slot s{bucket.entries.size() - 1, &entry.env->plan(), entry.env.get()};
+#if defined(EIGFFT_RUNTIME_INSTRUMENTATION)
+  std::cerr << "[plancache] new entry index=" << s.index
+        << " env=" << static_cast<const void*>(s.env)
+        << " arena=" << static_cast<const void*>(&s.env->arena())
+        << " threads=" << s.env->threads()
+        << " lanes=" << s.env->lanes() << "\n";
+#endif
+  return s;
   }
 
   void release_token(const PlanKey& key, std::size_t index) {
