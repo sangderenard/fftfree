@@ -42,6 +42,8 @@
 #include <chrono>
 #include <unordered_set>
 
+#include "recovery_ops.hpp"
+
 // #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 //   #include <xmmintrin.h>  // FTZ/DAZ
 // #endif
@@ -179,15 +181,6 @@ struct KernelContext {
   virtual ~KernelContext() = default;
 };
 
-// Lightweight job-dispatch interface: algorithms call this to either
-// run work inline or post to an external dispatcher provided by callers.
-class JobDispatcher {
- public:
-  using Fn = std::function<void(size_t,size_t,int)>;
-  virtual ~JobDispatcher() = default;
-  virtual void parallel_for(size_t total, size_t chunk, const Fn& fn) = 0;
-};
-
 // Generic algorithm-specific recovery hook interface carried per job.
 // All callbacks are optional; null pointers are treated as no-ops.
 struct RecoveryOps {
@@ -196,6 +189,154 @@ struct RecoveryOps {
   void (*restore_range)(void* job_ctx, size_t start_chunk, size_t end_chunk) = nullptr;
   void (*finalize)(void* job_ctx) = nullptr;
 };
+
+// Lightweight job-dispatch interface: algorithms call this to either
+// run work inline or post to an external dispatcher provided by callers.
+class JobDispatcher {
+ public:
+  using Fn = std::function<void(size_t,size_t,int)>;
+  virtual ~JobDispatcher() = default;
+  virtual void parallel_for(size_t total, size_t chunk, const Fn& fn) = 0;
+  virtual void parallel_for_with_restore(size_t total,
+                                         size_t chunk,
+                                         const Fn& fn,
+                                         std::function<void(size_t,size_t)> restore_fn,
+                                         RecoveryOps ops,
+                                         void* job_ctx) {
+    // Default fallback: execute inline and invoke recovery hooks in-order.
+    if (total == 0) {
+      if (ops.finalize) { try { ops.finalize(job_ctx); } catch (...) {} }
+      return;
+    }
+    if (chunk == 0) chunk = 1;
+    const size_t chunk_count = (total + chunk - 1) / chunk;
+    if (ops.init) { try { ops.init(job_ctx, chunk_count); } catch (...) {} }
+    size_t idx = 0;
+    for (size_t start = 0; start < total; start += chunk, ++idx) {
+      const size_t end = std::min(total, start + chunk);
+      if (ops.capture_chunk) {
+        try { ops.capture_chunk(job_ctx, idx, 0); } catch (...) {}
+      }
+      fn(start, end, 0);
+    }
+    if (ops.finalize) { try { ops.finalize(job_ctx); } catch (...) {} }
+    (void)restore_fn;
+  }
+};
+
+namespace detail {
+
+template <class T>
+struct ColumnRecoveryJobContext {
+  using Complex = std::complex<T>;
+  Complex* base = nullptr;
+  Eigen::Index axis_stride = 0;   // element stride between rows
+  Eigen::Index batch_stride = 0;  // element stride between columns
+  int rows = 0;
+  int batch = 0;
+  int lane_cols = 0;
+  std::vector<ColumnSnapshot> snapshots;
+};
+
+template <class T>
+inline ColumnSlice make_column_slice(const ColumnRecoveryJobContext<T>& ctx,
+                                     size_t chunk_index) {
+  ColumnSlice slice{};
+  using Complex = typename ColumnRecoveryJobContext<T>::Complex;
+  if (!ctx.base || ctx.rows <= 0 || ctx.batch <= 0 || ctx.lane_cols <= 0) {
+    slice.rowsN = 0;
+    slice.width = 0;
+    return slice;
+  }
+  const size_t chunk_start = chunk_index * static_cast<size_t>(ctx.lane_cols);
+  if (chunk_start >= static_cast<size_t>(ctx.batch)) {
+    slice.rowsN = 0;
+    slice.width = 0;
+    return slice;
+  }
+  const int remaining = ctx.batch - static_cast<int>(chunk_start);
+  const int width = std::min(ctx.lane_cols, remaining);
+  if (width <= 0) {
+    slice.rowsN = 0;
+    slice.width = 0;
+    return slice;
+  }
+  slice.rowsN = ctx.rows;
+  slice.width = width;
+  slice.elem_bytes = static_cast<int>(sizeof(Complex));
+  slice.axis_stride = static_cast<std::ptrdiff_t>(ctx.axis_stride) * slice.elem_bytes;
+  slice.batch_stride = static_cast<std::ptrdiff_t>(ctx.batch_stride) * slice.elem_bytes;
+  slice.base = reinterpret_cast<std::byte*>(ctx.base +
+               chunk_start * static_cast<size_t>(ctx.batch_stride));
+  return slice;
+}
+
+template <class T>
+inline void column_recovery_init(void* job_ctx, size_t chunk_count) {
+  auto* ctx = static_cast<ColumnRecoveryJobContext<T>*>(job_ctx);
+  if (!ctx) return;
+  try {
+    ctx->snapshots.clear();
+    ctx->snapshots.resize(chunk_count);
+  } catch (...) {
+    ctx->snapshots.clear();
+  }
+}
+
+template <class T>
+inline void column_recovery_capture(void* job_ctx, size_t chunk_index, int) {
+  auto* ctx = static_cast<ColumnRecoveryJobContext<T>*>(job_ctx);
+  if (!ctx) return;
+  if (chunk_index >= ctx->snapshots.size()) return;
+  ColumnSlice slice = make_column_slice(*ctx, chunk_index);
+  if (slice.rowsN <= 0 || slice.width <= 0) return;
+  try {
+    capture_columns(slice, ctx->snapshots[chunk_index]);
+  } catch (...) {
+    // best-effort capture
+  }
+}
+
+template <class T>
+inline void column_recovery_restore(void* job_ctx,
+                                    size_t start_chunk,
+                                    size_t end_chunk) {
+  auto* ctx = static_cast<ColumnRecoveryJobContext<T>*>(job_ctx);
+  if (!ctx) return;
+  if (start_chunk >= end_chunk) return;
+  end_chunk = std::min(end_chunk, ctx->snapshots.size());
+  for (size_t chunk = start_chunk; chunk < end_chunk; ++chunk) {
+    if (chunk >= ctx->snapshots.size()) break;
+    const ColumnSnapshot& snap = ctx->snapshots[chunk];
+    if (snap.bytes.empty()) continue;
+    ColumnSlice slice = make_column_slice(*ctx, chunk);
+    if (slice.rowsN <= 0 || slice.width <= 0) continue;
+    try {
+      restore_columns(slice, snap);
+    } catch (...) {
+      // continue restoring remaining chunks
+    }
+  }
+}
+
+template <class T>
+inline void column_recovery_finalize(void* job_ctx) {
+  auto* ctx = static_cast<ColumnRecoveryJobContext<T>*>(job_ctx);
+  if (!ctx) return;
+  ctx->snapshots.clear();
+}
+
+template <class T>
+inline RecoveryOps make_column_recovery_ops(ColumnRecoveryJobContext<T>&) {
+  RecoveryOps ops;
+  ops.init = &column_recovery_init<T>;
+  ops.capture_chunk = &column_recovery_capture<T>;
+  ops.restore_range = &column_recovery_restore<T>;
+  ops.finalize = &column_recovery_finalize<T>;
+  return ops;
+}
+
+}  // namespace detail
 
 // Lightweight, non-blocking trace logger used only when thread tracing is
 // enabled. Worker threads append messages to a thread-local buffer which is
@@ -323,6 +464,27 @@ class InlineDispatcher : public JobDispatcher {
       const size_t end = std::min(total, start + chunk);
       fn(start, end, 0);
     }
+  }
+
+  void parallel_for_with_restore(size_t total,
+                                 size_t chunk,
+                                 const Fn& fn,
+                                 std::function<void(size_t,size_t)> restore_fn,
+                                 RecoveryOps ops,
+                                 void* job_ctx) override {
+    if (chunk == 0) chunk = 1;
+    const size_t chunk_count = (total + chunk - 1) / chunk;
+    if (ops.init) { try { ops.init(job_ctx, chunk_count); } catch (...) {} }
+    size_t idx = 0;
+    for (size_t start = 0; start < total; start += chunk, ++idx) {
+      const size_t end = std::min(total, start + chunk);
+      if (ops.capture_chunk) {
+        try { ops.capture_chunk(job_ctx, idx, 0); } catch (...) {}
+      }
+      fn(start, end, 0);
+    }
+    if (ops.finalize) { try { ops.finalize(job_ctx); } catch (...) {} }
+    (void)restore_fn;
   }
 };
 
@@ -1928,6 +2090,10 @@ template<class T> struct Plan {
     }
     requested_threads = std::min(requested_threads, Limits::kCompileTimeMaxThreads);
 
+    if (!use_threads && !detail::kAllowSequentialFallback) {
+      throw std::invalid_argument("Sequential execution disabled: Plan requires thread-enabled dispatcher");
+    }
+
     if (!arena.twiddles || !arena.bitrev) {
       throw std::invalid_argument("PlanArena must provide twiddle and bit-reversal buffers");
     }
@@ -2460,6 +2626,19 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
 #if EIGFFT_TIMING
   timing_internal::ScopedTimer __t_pre_permute(timing_internal::Bin::PreButterfly);
 #endif
+  const bool enable_recovery = (P.dispatcher() != &InlineDispatcher::instance()) && chunk_count > 0;
+  detail::ColumnRecoveryJobContext<T> permute_recovery{};
+  if (enable_recovery) {
+    permute_recovery.base = layout.base;
+    permute_recovery.axis_stride = axis_stride;
+    permute_recovery.batch_stride = batch_stride;
+    permute_recovery.rows = N;
+    permute_recovery.batch = B;
+    permute_recovery.lane_cols = active_lane_cols;
+  }
+  const RecoveryOps permute_ops = enable_recovery ? make_column_recovery_ops<T>(permute_recovery)
+                                                  : RecoveryOps{};
+
   {
     auto permute_fn = [&](size_t start, size_t end, int worker_id) {
       std::vector<Complex*> columns(static_cast<size_t>(active_lane_cols));
@@ -2502,7 +2681,10 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
       }
     };
     // Dispatch permute work via the Plan dispatcher (worker pool or inline).
-    P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, permute_fn);
+    P.dispatcher()->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, permute_fn,
+                                              std::function<void(size_t,size_t)>(),
+                                              permute_ops,
+                                              enable_recovery ? static_cast<void*>(&permute_recovery) : nullptr);
   }
   
 #if EIGFFT_TRACE_THREADS
@@ -2513,6 +2695,18 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
 #if EIGFFT_TIMING
   timing_internal::ScopedTimer __t_butterfly(timing_internal::Bin::ButterflyStage);
 #endif
+  detail::ColumnRecoveryJobContext<T> stage_recovery{};
+  const RecoveryOps stage_ops = [&]() {
+    if (!enable_recovery) return RecoveryOps{};
+    stage_recovery.base = layout.base;
+    stage_recovery.axis_stride = axis_stride;
+    stage_recovery.batch_stride = batch_stride;
+    stage_recovery.rows = N;
+    stage_recovery.batch = B;
+    stage_recovery.lane_cols = active_lane_cols;
+    return make_column_recovery_ops<T>(stage_recovery);
+  }();
+
   for (int len = 2, stage_idx = 0; len <= N; len <<= 1, ++stage_idx) {
     const int half = len >> 1;
     const int step = N / len;
@@ -2641,7 +2835,12 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
     }
 #endif
     // Dispatch stage work via the Plan dispatcher (worker pool or inline).
-    P.dispatcher()->parallel_for(static_cast<size_t>(chunk_count), 1, stage_chunk);
+    P.dispatcher()->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, stage_chunk,
+                                              std::function<void(size_t,size_t)>(),
+                                              stage_ops,
+                                              (enable_recovery && stage_ops.init)
+                                                  ? static_cast<void*>(&stage_recovery)
+                                                  : nullptr);
 #if EIGFFT_TRACE_THREADS
     {
       std::ostringstream _oss;
