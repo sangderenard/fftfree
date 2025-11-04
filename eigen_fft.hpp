@@ -545,7 +545,9 @@ class WorkerPool {
   WorkerPool& operator=(WorkerPool&&) = delete;
 
   void reset(int threads) {
-    const int requested = std::max(1, threads);
+    int requested = std::max(1, threads);
+    const int hw = static_cast<int>(std::thread::hardware_concurrency());
+    if (hw > 0) requested = std::min(requested, hw);
     if (workers_.empty()) {
       stop_ = false;
       std::atomic_store(&job_.fn, std::shared_ptr<Job::FnType>(nullptr));
@@ -2414,6 +2416,26 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   }
 
   const int chunk_count = (B + active_lane_cols - 1) / active_lane_cols;
+  const bool debug_chunks = (std::getenv("FFTFREE_DEBUG_CHUNKS") != nullptr);
+  std::vector<int> permute_counts;
+  std::vector<int> stage_counts;
+  std::vector<int> permute_worker;
+  std::vector<int> stage_worker;
+  std::mutex debug_mutex;
+  if (debug_chunks) {
+    std::lock_guard<std::mutex> lk(debug_mutex);
+    std::cerr << "[debug] workspace B=" << B
+              << " threads=" << threads
+              << " active_lane_cols=" << active_lane_cols
+              << " chunk_count=" << chunk_count
+              << " axis_stride=" << axis_stride
+              << " batch_stride=" << batch_stride
+              << "\n";
+    permute_counts.assign(B, 0);
+    stage_counts.assign(B, 0);
+    permute_worker.assign(B, -1);
+    stage_worker.assign(B, -1);
+  }
   // Note: background ingestion/precompute removed. Column pointer arrays are
   // computed inline by worker tasks. This avoids detached threads and ensures
   // all work is scheduled via the Plan dispatcher / worker pool.
@@ -2459,6 +2481,13 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
         for (int lane = 0; lane < width; ++lane) {
           const Eigen::Index batch_index = Eigen::Index(col + lane);
           columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
+        }
+        if (debug_chunks) {
+          std::lock_guard<std::mutex> lk(debug_mutex);
+          for (int lane = 0; lane < width; ++lane) {
+            ++permute_counts[col + lane];
+            permute_worker[col + lane] = worker_id;
+          }
         }
         for (int i = 0; i < N; ++i) {
           const int src = bitrev[i];
@@ -2527,6 +2556,13 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
         for (int lane = 0; lane < width; ++lane) {
           const Eigen::Index batch_index = Eigen::Index(col + lane);
           columns[static_cast<size_t>(lane)] = layout.base + batch_index * batch_stride;
+        }
+        if (debug_chunks) {
+          std::lock_guard<std::mutex> lk(debug_mutex);
+          for (int lane = 0; lane < width; ++lane) {
+            ++stage_counts[col + lane];
+            stage_worker[col + lane] = worker_id;
+          }
         }
         for (int k = 0; k < half; ++k) {
           const Complex w = P.W[k * step];
@@ -2641,6 +2677,17 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
       for (int i = 0; i < N; ++i) {
         column_ptr[Eigen::Index(i) * axis_stride] *= scale;
       }
+    }
+  }
+  if (debug_chunks) {
+    for (int col = 0; col < B; ++col) {
+      if (permute_counts[col] != 1) {
+        std::cerr << "[debug] permute column " << col << " count=" << permute_counts[col] << "\n";
+      }
+      if (stage_counts[col] != stages) {
+        std::cerr << "[debug] stage column " << col << " count=" << stage_counts[col] << " expected=" << stages << "\n";
+      }
+      std::cerr << "[debug] permute worker col=" << col << " worker=" << permute_worker[col] << " stage_worker=" << stage_worker[col] << "\n";
     }
   }
   // Post-butterfly transform hook (e.g., C2R imag clear or magnitude reduction)

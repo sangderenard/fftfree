@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <fstream>
 
 using namespace eigfft;
 
@@ -79,6 +80,21 @@ int run_transform_test(int N, int B, const std::string& alg, int threads) {
 
   // Capture intermediate forward output for later per-element inspection
   MatrixXc after_fwd = data;
+  if (const char* dump_env = std::getenv("FFTFREE_DUMP_AFTER_FWD")) {
+    std::string path = dump_env;
+    if (!path.empty()) {
+      std::ofstream ofs(path);
+      if (ofs.is_open()) {
+        ofs << std::setprecision(12);
+        for (int j = 0; j < B; ++j) {
+          for (int i = 0; i < N; ++i) {
+            const Complex v = after_fwd(i, j);
+            ofs << i << ',' << j << ',' << v.real() << ',' << v.imag() << '\n';
+          }
+        }
+      }
+    }
+  }
 
   // Inverse
   PlanEnvironment<Scalar> env_inv;
@@ -90,6 +106,22 @@ int run_transform_test(int N, int B, const std::string& alg, int threads) {
 
   fft_inplace_batched<Scalar>(data, env_inv.plan());
   const auto t2 = std::chrono::high_resolution_clock::now();
+
+  if (const char* dump_env = std::getenv("FFTFREE_DUMP_AFTER_INV")) {
+    std::string path = dump_env;
+    if (!path.empty()) {
+      std::ofstream ofs(path);
+      if (ofs.is_open()) {
+        ofs << std::setprecision(12);
+        for (int j = 0; j < B; ++j) {
+          for (int i = 0; i < N; ++i) {
+            const Complex v = data(i, j);
+            ofs << i << ',' << j << ',' << v.real() << ',' << v.imag() << '\n';
+          }
+        }
+      }
+    }
+  }
 
   // Compute errors: try both unscaled and scaled-by-N inverse to be robust
   double max_abs_orig = 0.0;
