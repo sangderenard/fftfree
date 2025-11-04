@@ -42,6 +42,22 @@ namespace fftfree {
 
 static std::atomic<bool> g_crash_handler_installed{false};
 
+// Control whether crash diagnostics write files (minidumps / .log). Default
+// is false to avoid leaving artifacts during normal test runs. Tests or CFFI
+// callers may opt-in via the provided setter.
+static std::atomic<bool> g_crash_handler_write_files{false};
+
+// When true, suppress any console/minidump/log output; used for "silent"
+// failure mode in tests where we want no crash artifacts or console noise.
+static std::atomic<bool> g_crash_handler_silent{false};
+
+inline void set_crash_handler_silent(bool on) { g_crash_handler_silent.store(on ? true : false); }
+inline bool crash_handler_silent_enabled() { return g_crash_handler_silent.load(); }
+
+// Setter/getter for runtime control (call from C ABI to opt-in file writes).
+inline void set_crash_handler_write_files(bool on) { g_crash_handler_write_files.store(on ? true : false); }
+inline bool crash_handler_write_files_enabled() { return g_crash_handler_write_files.load(); }
+
 inline std::string timestamp_string() {
     using namespace std::chrono;
     auto now = system_clock::now();
@@ -64,6 +80,8 @@ inline void write_minidump(EXCEPTION_POINTERS* exinfo) {
     // Dynamic load to avoid link dependency in CI/builds that don't provide dbghelp.
     HMODULE hDbg = LoadLibraryA("dbghelp.dll");
     if (!hDbg) return;
+    // If silent mode requested, do nothing.
+    if (g_crash_handler_silent.load()) { FreeLibrary(hDbg); return; }
     using MiniDumpWriteDump_t = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, DWORD, void*, void*, void*);
     auto fn = reinterpret_cast<MiniDumpWriteDump_t>(GetProcAddress(hDbg, "MiniDumpWriteDump"));
     if (!fn) { FreeLibrary(hDbg); return; }
@@ -71,6 +89,8 @@ inline void write_minidump(EXCEPTION_POINTERS* exinfo) {
     DWORD pid = GetCurrentProcessId();
     HANDLE proc = GetCurrentProcess();
 
+    // If file writing is disabled, avoid creating a minidump file.
+    if (!g_crash_handler_write_files.load()) { FreeLibrary(hDbg); return; }
     std::string fname = "fftfree-crash-" + timestamp_string() + ".dmp";
     HANDLE fh = CreateFileA(fname.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (fh == INVALID_HANDLE_VALUE) { FreeLibrary(hDbg); return; }
@@ -91,13 +111,16 @@ inline void write_minidump(EXCEPTION_POINTERS* exinfo) {
     fn(proc, pid, fh, dumpType, &mei, nullptr, nullptr);
 
     CloseHandle(fh);
-    // Notify user
-    std::fprintf(stderr, "Wrote minidump: %s\n", fname.c_str());
+    // Notify user unless silent mode is enabled
+    if (!g_crash_handler_silent.load()) {
+        std::fprintf(stderr, "Wrote minidump\n");
+    }
     FreeLibrary(hDbg);
 }
 
 // Write a human-readable stack trace (best-effort) to stderr and a .log file.
 inline void write_text_backtrace(EXCEPTION_POINTERS* /*exinfo*/) {
+    if (g_crash_handler_silent.load()) return;
     const int kMaxFrames = 62;
     void* frames[kMaxFrames];
     USHORT captured = CaptureStackBackTrace(0, kMaxFrames, frames, nullptr);
@@ -122,13 +145,17 @@ inline void write_text_backtrace(EXCEPTION_POINTERS* /*exinfo*/) {
             pSymInitialize(proc, nullptr, TRUE);
         }
 
-        std::string fname = "fftfree-crash-" + timestamp_string() + ".log";
-        FILE* f = std::fopen(fname.c_str(), "w");
-        if (f) {
-            std::fprintf(f, "CaptureStackBackTrace frames=%hu\n", captured);
+    // Only open a file when file-writing is enabled.
+        FILE* f = nullptr;
+        if (g_crash_handler_write_files.load()) {
+            std::string fname = "fftfree-crash-" + timestamp_string() + ".log";
+            f = std::fopen(fname.c_str(), "w");
+            if (f) {
+                std::fprintf(f, "CaptureStackBackTrace frames=%hu\n", captured);
+            }
         }
 
-        for (USHORT i = 0; i < captured; ++i) {
+    for (USHORT i = 0; i < captured; ++i) {
             DWORD64 addr = reinterpret_cast<DWORD64>(frames[i]);
             char symbol_buf[sizeof(SYMBOL_INFO) + 1024];
             PSYMBOL_INFO pSym = reinterpret_cast<PSYMBOL_INFO>(symbol_buf);
@@ -140,11 +167,11 @@ inline void write_text_backtrace(EXCEPTION_POINTERS* /*exinfo*/) {
             if (pSymFromAddr && pSymFromAddr(proc, addr, &displacement, pSym)) {
                 name = pSym->Name;
             }
-            std::fprintf(stderr, "#%02u %p %s +0x%llx\n", (unsigned)i, (void*)addr, name, (unsigned long long)displacement);
+            if (!g_crash_handler_silent.load()) std::fprintf(stderr, "#%02u %p %s +0x%llx\n", (unsigned)i, (void*)addr, name, (unsigned long long)displacement);
             if (f) std::fprintf(f, "#%02u %p %s +0x%llx\n", (unsigned)i, (void*)addr, name, (unsigned long long)displacement);
         }
         if (f) {
-            std::fprintf(f, "Wrote text backtrace to %s\n", fname.c_str());
+            std::fprintf(f, "Wrote text backtrace\n");
             std::fclose(f);
         }
 
@@ -155,15 +182,26 @@ inline void write_text_backtrace(EXCEPTION_POINTERS* /*exinfo*/) {
         }
         FreeLibrary(hDbg);
     } else {
-        // Fallback: just print addresses
-        std::fprintf(stderr, "Stack frames (addresses): captured=%hu\n", captured);
-        for (USHORT i = 0; i < captured; ++i) {
-            std::fprintf(stderr, "#%02u %p\n", (unsigned)i, frames[i]);
+        // Fallback: just print addresses (unless silent)
+        if (!g_crash_handler_silent.load()) {
+            std::fprintf(stderr, "Stack frames (addresses): captured=%hu\n", captured);
+            for (USHORT i = 0; i < captured; ++i) {
+                std::fprintf(stderr, "#%02u %p\n", (unsigned)i, frames[i]);
+            }
         }
     }
 }
 
 LONG WINAPI vectored_exception_handler(EXCEPTION_POINTERS* exinfo) {
+    // Ignore benign debugger-related exceptions (e.g., OutputDebugString).
+    // DBG_PRINTEXCEPTION_C (0x40010006) and its wide variant signal debug
+    // output to an attached debugger and should not generate crash reports.
+    DWORD code = exinfo && exinfo->ExceptionRecord ? exinfo->ExceptionRecord->ExceptionCode : 0;
+    if (code == 0x40010006 /* DBG_PRINTEXCEPTION_C */ ||
+        code == 0x4001000A /* DBG_PRINTEXCEPTION_WIDE_C (undoc) */ ||
+        code == 0x80000003 /* EXCEPTION_BREAKPOINT */) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     // Try to produce an immediate, human-readable trace on stderr.
     write_text_backtrace(exinfo);
     // Also write a minidump for post-mortem analysis
@@ -205,6 +243,17 @@ extern "C" inline int fftfree_run_with_seh(void (*thunk)(void*), void* ctx) {
 #else
 
 inline void write_backtrace_to_file(int signo, void* context) {
+#if defined(_WIN32)
+    (void)context; (void)signo;
+    // On Windows this path is not used; keep signature but no-op when file
+    // writing is disabled.
+#else
+    // Respect silent mode first
+    if (g_crash_handler_silent.load()) return;
+    if (!g_crash_handler_write_files.load()) {
+        std::fprintf(stderr, "Received signal %d (backtrace suppressed)\n", signo);
+        return;
+    }
     std::string fname = "fftfree-crash-" + timestamp_string() + ".log";
     FILE* f = std::fopen(fname.c_str(), "w");
     if (!f) return;
@@ -214,10 +263,11 @@ inline void write_backtrace_to_file(int signo, void* context) {
     int n = backtrace(bt, static_cast<int>(std::size(bt)));
     backtrace_symbols_fd(bt, n, fileno(f));
 #endif
-    std::fprintf(f, "Wrote backtrace to %s\n", fname.c_str());
+    std::fprintf(f, "Wrote backtrace\n");
     std::fclose(f);
-    // Also write to stderr
-    std::fprintf(stderr, "Wrote crash log: %s\n", fname.c_str());
+    // Also write to stderr unless silent
+    if (!g_crash_handler_silent.load()) std::fprintf(stderr, "Wrote crash log\n");
+#endif
 }
 
 inline void signal_handler(int signo, siginfo_t* si, void* context) {
@@ -244,7 +294,9 @@ inline void install_crash_handler_impl() {
 
 // Public installer. Safe to call multiple times.
 inline void install_crash_handler() {
-    // Honor environment opt-out
+    // If runtime silent flag set, do not install handler (API-level opt-out).
+    if (g_crash_handler_silent.load()) return;
+    // Honor environment opt-out for backward compatibility
     const char* env = std::getenv("FFTFREE_DISABLE_CRASH_HANDLER");
     if (env && std::strcmp(env, "1") == 0) return;
     install_crash_handler_impl();

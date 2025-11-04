@@ -58,7 +58,40 @@ void* fft_init_full(size_t n,
                     int half_spectrum,
                     int allow_outer_parallel,
                     int allow_inner_parallel,
-                    int inner_threads);
+                    int inner_threads,
+                    int save_crash_logs,
+                    int silent_crash_reports);
+void* fft_init_full_v2(size_t n,
+                    int threads,
+                    int lanes,
+                    int inverse,
+                    int kernel,
+                    int radix,
+                    const int* radix_pattern,
+                    size_t radix_pattern_len,
+                    int pad_mode,
+                    int window,
+                    int hop,
+                    int stft_mode,
+                    int transform,
+                    int reduce_magnitude,
+                    int store_polar,
+                    int half_spectrum,
+                    int allow_outer_parallel,
+                    int allow_inner_parallel,
+                    int inner_threads,
+                    int save_crash_logs,
+                    int silent_crash_reports,
+                    int apply_windows,
+                    int apply_ola,
+                    int analysis_window_kind,
+                    float analysis_param1,
+                    float analysis_param2,
+                    int synthesis_window_kind,
+                    float synthesis_param1,
+                    float synthesis_param2,
+                    int window_norm_policy,
+                    int cola_mode);
 int fft_execute(void* handle,
                 const float* in_pcm,
                 float* out_real,
@@ -76,6 +109,7 @@ size_t fft_execute_batched(void* handle,
                            float* out_imag,
                            float* out_mag,
                            int pad_mode,
+                           int enable_backup,
                            size_t max_frames);
 """
 )
@@ -157,6 +191,23 @@ def _parse_args() -> argparse.Namespace:
         help="FFT kernel selection: auto, ct (Cooley–Tukey), stockham",
     )
     parser.add_argument(
+        "--transform",
+        choices=["r2c", "c2c"],
+        default="r2c",
+        help="Transform mode for forward STFT: r2c (default, real->complex, halves bands) or c2c (full complex)",
+    )
+    parser.add_argument(
+        "--output",
+        choices=["mag", "rgb"],
+        default="mag",
+        help="Image output: mag (grayscale magnitude) or rgb (real/imag/mag stack)",
+    )
+    parser.add_argument(
+        "--full-spectrum",
+        action="store_true",
+        help="Force full spectrum rows in output (disables half-spectrum packing)",
+    )
+    parser.add_argument(
         "--pad",
         choices=["auto", "always", "never"],
         default="auto",
@@ -172,6 +223,33 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip writing the FFT visualization PNG",
     )
+    # Magnitude display mapping: default to a non-destructive nonlinear (log1p) mapping
+    parser.add_argument(
+        "--scale",
+        choices=["linear", "log1p", "db"],
+        default="log1p",
+        help="Magnitude visualization scale: linear, log1p (default), or db",
+    )
+    # dB controls (used only when --scale=db)
+    parser.add_argument(
+        "--no-db",
+        dest="use_db",
+        action="store_false",
+        help="Disable dB mapping for magnitude image; use linear min-max instead",
+    )
+    parser.add_argument(
+        "--db-floor",
+        type=float,
+        default=-80.0,
+        help="Magnitude floor (dB) for PNG mapping when dB is enabled (default: -80 dB)",
+    )
+    parser.add_argument(
+        "--db-ref",
+        choices=["global", "frame"],
+        default="global",
+        help="Reference for dB mapping: global = normalize by global max; frame = normalize each frame by its per-frame max",
+    )
+    parser.set_defaults(use_db=True)
     return parser.parse_args()
 
 
@@ -219,13 +297,17 @@ def main() -> None:
         # Prefer the full initializer (creates worker pool when requested) while
         # preserving the STFT/window/hop behavior from fft_init_ex. Fall back to
         # fft_init_ex when the shared library doesn't export the full API.
+        init_full_v2 = getattr(lib, "fft_init_full_v2", None)
         init_full = getattr(lib, "fft_init_full", None)
-        if init_full is not None:
+        if init_full_v2 is not None:
             # Parameters: n, threads, lanes, inverse, kernel, radix, radix_pattern, radix_pattern_len,
             # pad_mode, window, hop, stft_mode,
             # transform, reduce_magnitude, store_polar, half_spectrum,
             # allow_outer_parallel, allow_inner_parallel, inner_threads
-            ctx = init_full(
+            # Map transform and half-spectrum
+            transform_code = 1 if args.transform == "r2c" else 0
+            half_flag = 0 if args.full_spectrum else (1 if args.transform == "r2c" else 0)
+            ctx = init_full_v2(
                 STFT_N,
                 args.threads,
                 args.lanes,
@@ -238,13 +320,49 @@ def main() -> None:
                 STFT_W,
                 STFT_H,
                 1,              # stft_mode
-                0,              # transform (C2C)
+                transform_code, # transform
                 0,              # reduce_magnitude
                 0,              # store_polar
-                0,              # half_spectrum
+                half_flag,      # half_spectrum
                 1,              # allow_outer_parallel -> create WorkerPool
                 0,              # allow_inner_parallel
-                0               # inner_threads
+                0,              # inner_threads
+                0,              # save_crash_logs
+                0,              # silent_crash_reports
+                0,              # apply_windows (off)
+                0,              # apply_ola (off)
+                0,              # analysis_window_kind (RECT)
+                0.0,            # analysis_param1
+                0.0,            # analysis_param2
+                0,              # synthesis_window_kind (RECT)
+                0.0,            # synthesis_param1
+                0.0,            # synthesis_param2
+                0,              # window_norm_policy (NONE)
+                0               # cola_mode (OFF)
+            )
+        elif init_full is not None:
+            ctx = init_full(
+                STFT_N,
+                args.threads,
+                args.lanes,
+                0,
+                kernel_code,
+                0,
+                ffi.NULL,
+                0,
+                pad_code,
+                STFT_W,
+                STFT_H,
+                1,
+                transform_code,
+                0,
+                0,
+                half_flag,
+                1,
+                0,
+                0,
+                0,
+                0
             )
         else:
             # Older/shared libs may not export fft_init_full; keep previous behavior.
@@ -308,8 +426,10 @@ def main() -> None:
             print(f"Padding (library): plan N adjusted {STFT_N} -> {plan_n}")
 
         N_eff = int(plan_n)
-        # allocate flattened output buffers: frames * N
-        out_count = frames * N_eff
+        # Determine bins per frame based on half_spectrum flag actually used
+        bins_per_frame = (N_eff // 2 + 1) if (not args.full_spectrum and args.transform == "r2c") else N_eff
+        # allocate flattened output buffers: frames * bins
+        out_count = frames * bins_per_frame
         out_real = np.zeros(out_count, dtype=np.float32)
         out_imag = np.zeros(out_count, dtype=np.float32)
         out_mag = np.zeros(out_count, dtype=np.float32)
@@ -324,6 +444,7 @@ def main() -> None:
                 ffi.cast("float *", out_mag.ctypes.data),
                 pad_code,
                 0,
+                0,
             )
             if produced == 0:
                 print("ERROR: fft_execute_batched failed or produced 0 frames")
@@ -332,26 +453,63 @@ def main() -> None:
         finally:
             lib.fft_free(ctx)
 
-        # Normalize helpers used by both the PNG writer and stats reporting.
-        def _normalize_for_image(arr: np.ndarray) -> np.ndarray:
-            """Return a float32 array scaled to the 0-255 visualization range."""
-
-            scaled = np.array(arr, dtype=np.float32, copy=True)
-            if scaled.size == 0:
-                return scaled
-
-            min_val = float(np.min(scaled))
-            scaled -= min_val
-            max_val = float(np.max(scaled))
+        # Normalization helpers used by both the PNG writer and stats reporting.
+        def _normalize_linear_0_255(arr: np.ndarray) -> np.ndarray:
+            a = np.array(arr, dtype=np.float32, copy=True)
+            if a.size == 0:
+                return a
+            min_val = float(np.min(a))
+            a -= min_val
+            max_val = float(np.max(a))
             if max_val == 0.0:
-                return np.zeros_like(scaled, dtype=np.float32)
+                return np.zeros_like(a, dtype=np.float32)
+            a /= (max_val + 1e-8)
+            a *= 255.0
+            return a
 
-            scaled /= (max_val + 1e-8)
-            scaled *= 255.0
-            return scaled
+        def _mag_viz_u8(mag_mat: np.ndarray) -> np.ndarray:
+            # mag_mat: (bins, frames), float32 magnitude
+            scale = args.scale
+            if scale == "linear":
+                return _normalize_linear_0_255(mag_mat).astype(np.uint8)
+            if scale == "db":
+                eps = 1e-12
+                m = np.array(mag_mat, dtype=np.float32, copy=True)
+                if args.db_ref == "frame":
+                    ref = np.max(m, axis=0, keepdims=True) + eps
+                    m_norm = m / ref
+                else:
+                    ref = float(np.max(m)) + eps
+                    m_norm = m / ref
+                m_norm = np.clip(m_norm, eps, 1.0)
+                db = 20.0 * np.log10(m_norm)
+                floor_db = float(args.db_floor)
+                db = np.clip(db, floor_db, 0.0)
+                norm = (db - floor_db) / (0.0 - floor_db + 1e-12)
+                return np.uint8(np.clip(norm * 255.0, 0, 255))
+            # log1p mapping: y = log1p(k * m) / log1p(k * m_ref)
+            # Choose k adaptively from median to place median around mid-gray.
+            m = np.array(mag_mat, dtype=np.float32, copy=True)
+            ref = np.max(m)
+            if ref <= 0:
+                return np.zeros_like(m, dtype=np.uint8)
+            med = float(np.median(m)) if m.size else 0.0
+            # Aim: log1p(k*med)/log1p(k*ref) ~= 0.5 -> solve for k numerically simple
+            # Use heuristic k: k = 1.0/med if med>0 else 1.0/ref
+            if med > 0:
+                k = 1.0 / med
+            else:
+                k = 1.0 / ref
+            num = np.log1p(k * m)
+            den = np.log1p(k * ref) + 1e-12
+            norm = np.clip(num / den, 0.0, 1.0)
+            return np.uint8(np.clip(norm * 255.0, 0, 255))
 
-        def norm(arr: np.ndarray) -> np.ndarray:
-            return _normalize_for_image(arr).astype(np.uint8)
+        # Trim outputs to produced frames before any stats/reshapes
+        used = frames * bins_per_frame
+        out_real = out_real[:used]
+        out_imag = out_imag[:used]
+        out_mag  = out_mag[:used]
 
         if args.stats:
             def describe(name: str, arr: np.ndarray) -> None:
@@ -371,6 +529,11 @@ def main() -> None:
 
             print("Normalized FFT channel statistics (0-255 visualization scale):")
 
+            # Helper for stats-only normalization (linear 0..255). Visualization
+            # proper uses _mag_viz_u8 below which applies --scale (linear/log1p/db).
+            def _normalize_for_image(arr: np.ndarray) -> np.ndarray:
+                return _normalize_linear_0_255(arr)
+
             def describe_normalized(name: str, arr: np.ndarray) -> None:
                 normalized = _normalize_for_image(arr)
                 describe(name, normalized)
@@ -380,26 +543,102 @@ def main() -> None:
             describe_normalized("mag_norm", out_mag)
 
         if not args.no_image:
-            real_img = norm(out_real)
-            imag_img = norm(out_imag)
-            mag_img = norm(out_mag)
-
-            # Try to reshape into (frames, N) then transpose to (N, frames)
-            # so the vertical axis represents frequency bins (N=1024).
+            # Raw magnitude stats just before visualization to validate data range
             try:
-                real_mat = real_img.reshape((frames, N_eff)).T
-                imag_mat = imag_img.reshape((frames, N_eff)).T
-                mag_mat = mag_img.reshape((frames, N_eff)).T
+                mag_vec = np.asarray(out_mag, dtype=np.float32)
+                used_frames = int(frames)
+                used_bins = int(bins_per_frame)
+                if mag_vec.size != used_frames * used_bins:
+                    print(f"[warn] magnitude size mismatch: vec={mag_vec.size} expected={used_frames*used_bins}")
+                finite = mag_vec[np.isfinite(mag_vec)] if mag_vec.size else mag_vec
+                if finite.size > 0:
+                    mn = float(finite.min()); mx = float(finite.max())
+                    mean = float(finite.mean()); std = float(finite.std(ddof=0))
+                    zeros = int(np.sum(finite == 0.0))
+                    nz = int(finite.size - zeros)
+                    p50 = float(np.percentile(finite, 50))
+                    p90 = float(np.percentile(finite, 90))
+                    p99 = float(np.percentile(finite, 99))
+                    print(f"RAW_MAG_STATS: frames={used_frames} bins/frame={used_bins} size={finite.size}")
+                    print(f"  min={mn:.6g} max={mx:.6g} mean={mean:.6g} std={std:.6g} zeros={zeros} nonzeros={nz}")
+                    print(f"  p50={p50:.6g} p90={p90:.6g} p99={p99:.6g}")
+                else:
+                    print("RAW_MAG_STATS: empty magnitude vector")
+            except Exception as _ex_magstats:
+                print(f"[warn] exception computing raw magnitude stats: {_ex_magstats}")
+
+            # Prepare channel images
+            # Build matrices shaped for image construction first
+            try:
+                real_mat_full = _normalize_linear_0_255(out_real).astype(np.uint8).reshape((frames, bins_per_frame)).T
+                imag_mat_full = _normalize_linear_0_255(out_imag).astype(np.uint8).reshape((frames, bins_per_frame)).T
+                mag_mat_lin = out_mag.reshape((frames, bins_per_frame)).T  # raw magnitudes (bins, frames)
             except Exception as ex:
-                # No fallbacks: fail loudly so caller can fix parameters/output sizing.
-                print(f"ERROR: unable to reshape STFT outputs to (frames={frames}, N={N_eff}): {ex}")
+                print(f"ERROR: unable to reshape channels to (frames={frames}, bins={bins_per_frame}): {ex}")
                 lib.fft_free(ctx)
                 return
 
-            # Stack into RGB image with shape (N, frames, 3)
-            img2d = np.stack([real_mat, imag_mat, mag_mat], axis=2)
-            Image.fromarray(img2d, "RGB").save(args.output)
-            print(f"Saved FFT image to {args.output} using {lib_path} with shape {img2d.shape}")
+            from PIL.PngImagePlugin import PngInfo
+            orient = "bins_top"  # rows=frequency bins from 0..Nyquist at image top
+            if args.output == "rgb":
+                # Real/imag linear normalization; magnitude optionally dB
+                # Capture channel min/max so RGB can be inverted to linear complex for baselines.
+                real_min = float(np.min(out_real)) if out_real.size else 0.0
+                real_max = float(np.max(out_real)) if out_real.size else 0.0
+                imag_min = float(np.min(out_imag)) if out_imag.size else 0.0
+                imag_max = float(np.max(out_imag)) if out_imag.size else 0.0
+                mag_mat_db_u8 = _mag_viz_u8(mag_mat_lin)
+                img2d = np.stack([real_mat_full, imag_mat_full, mag_mat_db_u8], axis=2)
+                meta = PngInfo()
+                meta.add_text("FFTFREE_FMT", "rgb")
+                meta.add_text("FFTFREE_CHANNELS", "R=real,G=imag,B=mag")
+                meta.add_text("FFTFREE_ORIENT", orient)
+                meta.add_text("FFTFREE_SCALE", str(args.scale))
+                meta.add_text("FFTFREE_DB_REF", str(args.db_ref))
+                meta.add_text("FFTFREE_DB_FLOOR", str(float(args.db_floor)))
+                meta.add_text("FFTFREE_REAL_MIN", str(real_min))
+                meta.add_text("FFTFREE_REAL_MAX", str(real_max))
+                meta.add_text("FFTFREE_IMAG_MIN", str(imag_min))
+                meta.add_text("FFTFREE_IMAG_MAX", str(imag_max))
+                # If using global dB ref, store the reference magnitude used for mapping for potential inversion.
+                if args.scale == "db" and args.db_ref == "global":
+                    try:
+                        meta.add_text("FFTFREE_DB_GLOBAL_REF", str(float(np.max(mag_mat_lin))))
+                        meta.add_text("FFTFREE_INVERTIBLE", "1")
+                    except Exception:
+                        meta.add_text("FFTFREE_INVERTIBLE", "0")
+                else:
+                    # Per-frame dB or log1p are not strictly invertible from image alone
+                    meta.add_text("FFTFREE_INVERTIBLE", "0")
+                Image.fromarray(img2d, "RGB").save(args.output, pnginfo=meta)
+                print(f"Saved FFT image to {args.output} using {lib_path} with shape {img2d.shape} (mag-scale={args.scale}, ref={args.db_ref}, floor={args.db_floor} dB)")
+            else:
+                # Magnitude-only grayscale. Prefer dB mapping by default.
+                mag_u8 = _mag_viz_u8(mag_mat_lin)
+                meta = PngInfo()
+                meta.add_text("FFTFREE_FMT", "mag")
+                meta.add_text("FFTFREE_CHANNELS", "L=mag")
+                meta.add_text("FFTFREE_ORIENT", orient)
+                meta.add_text("FFTFREE_SCALE", str(args.scale))
+                meta.add_text("FFTFREE_DB_REF", str(args.db_ref))
+                meta.add_text("FFTFREE_DB_FLOOR", str(float(args.db_floor)))
+                if args.scale == "linear":
+                    # Store linear normalization min/max for invertibility
+                    mag_min = float(np.min(out_mag)) if out_mag.size else 0.0
+                    mag_max = float(np.max(out_mag)) if out_mag.size else 0.0
+                    meta.add_text("FFTFREE_MAG_MIN", str(mag_min))
+                    meta.add_text("FFTFREE_MAG_MAX", str(mag_max))
+                    meta.add_text("FFTFREE_INVERTIBLE", "1")
+                elif args.scale == "db" and args.db_ref == "global":
+                    try:
+                        meta.add_text("FFTFREE_DB_GLOBAL_REF", str(float(np.max(mag_mat_lin))))
+                        meta.add_text("FFTFREE_INVERTIBLE", "1")
+                    except Exception:
+                        meta.add_text("FFTFREE_INVERTIBLE", "0")
+                else:
+                    meta.add_text("FFTFREE_INVERTIBLE", "0")
+                Image.fromarray(mag_u8, "L").save(args.output, pnginfo=meta)
+                print(f"Saved magnitude image to {args.output} using {lib_path} with shape {mag_u8.shape} (mag-scale={args.scale}, ref={args.db_ref}, floor={args.db_floor} dB)")
         else:
             print("Image generation disabled (--no-image)")
     except Exception as e:
