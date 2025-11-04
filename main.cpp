@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <thread>
 #include <vector>
+#include <utility>
 
 namespace {
 
@@ -30,6 +31,22 @@ struct PoolDispatcherLocal : public eigfft::JobDispatcher {
       return;
     }
     pool->parallel_for(total, chunk, fn);
+  }
+
+  void parallel_for_with_restore(size_t total,
+                                 size_t chunk,
+                                 const Fn& fn,
+                                 std::function<void(size_t,size_t)> restore_fn,
+                                 eigfft::RecoveryOps ops,
+                                 void* job_ctx) override {
+    if (!pool || total == 0) {
+      eigfft::InlineDispatcher::instance().parallel_for_with_restore(total, chunk, fn,
+                                                                     std::move(restore_fn),
+                                                                     ops, job_ctx);
+      return;
+    }
+    pool->parallel_for_with_restore_ex(total, (chunk == 0) ? 1 : chunk, fn,
+                                       std::move(restore_fn), ops, job_ctx);
   }
 };
 

@@ -81,9 +81,12 @@ class PlanEnvironment {
 
     const int plan_thread_budget =
         std::max(clamped_threads, use_inner_threads ? requested_inner : 1);
-    const bool enable_plan_threads =
+    bool enable_plan_threads =
         (cfg.allow_outer_parallel && plan_thread_budget > 1) ||
         (use_inner_threads && plan_thread_budget > 1);
+    if (!detail::kAllowSequentialFallback) {
+      enable_plan_threads = plan_thread_budget > 0;
+    }
 
     const auto shape =
         compute_plan_arena_shape<Scalar>(N, plan_thread_budget, clamped_lanes);
