@@ -2901,7 +2901,8 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
                              std::complex<T>(T(0), T(0)));
   }
 
-  auto process_chunk = [&](size_t start, size_t end, int worker_id) {
+  AxisLayout<T> layout_capture = layout;
+  auto process_chunk = [&, layout_capture](size_t start, size_t end, int worker_id) {
     if (start >= static_cast<size_t>(B)) return;
     const int width = static_cast<int>(end - start);
     if (width <= 0) return;
@@ -2932,7 +2933,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
           << " threads=" << workspace_threads;
       throw std::runtime_error(oss.str());
     }
-  const size_t lane_stride = static_cast<size_t>(lane_capacity);
+    const size_t lane_stride = static_cast<size_t>(lane_capacity);
     const size_t buffer_stride = state->thread_stride();
     Complex* stage_in = state->arena.stockham_ping + slot * buffer_stride;
     Complex* stage_out = state->arena.stockham_pong + slot * buffer_stride;
@@ -2948,14 +2949,14 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
         << " buffer_stride=" << buffer_stride
         << " lane_stride=" << lane_stride << "\n";
 #endif
-    const ptrdiff_t max_offset = (layout.batch_size > 0 && layout.axis_size > 0)
-                                     ? (ptrdiff_t(layout.batch_size - 1) *
-                                            ptrdiff_t(layout.batch_stride) +
-                                        ptrdiff_t(layout.axis_size - 1) *
-                                            ptrdiff_t(layout.axis_stride))
+    const ptrdiff_t max_offset = (layout_capture.batch_size > 0 && layout_capture.axis_size > 0)
+                                     ? (ptrdiff_t(layout_capture.batch_size - 1) *
+                                            ptrdiff_t(layout_capture.batch_stride) +
+                                        ptrdiff_t(layout_capture.axis_size - 1) *
+                                            ptrdiff_t(layout_capture.axis_stride))
                                      : 0;
     for (int lane = 0; lane < width; ++lane) {
-      const ptrdiff_t base_idx = ptrdiff_t(start + lane) * ptrdiff_t(batch_stride);
+      const ptrdiff_t base_idx = ptrdiff_t(start + lane) * ptrdiff_t(layout_capture.batch_stride);
       lane_bases[static_cast<size_t>(lane)] = base_idx;
       if (base_idx < 0 || base_idx > max_offset) {
         std::ostringstream _oss;
@@ -2985,8 +2986,8 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     timing_internal::ScopedTimer __t_pre_load(timing_internal::Bin::PreButterfly);
 #endif
     for (int i = 0; i < N; ++i) {
-      const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
-  Complex* dest = stage_in + i * lane_capacity;
+      const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(layout_capture.axis_stride);
+      Complex* dest = stage_in + i * lane_capacity;
       for (int lane = 0; lane < safe_width; ++lane) {
         const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
         const ptrdiff_t idx = base_idx + off;
@@ -2998,7 +2999,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
           TraceLogger::instance().log(_oss.str());
           return;
         }
-        dest[lane] = layout.base[idx];
+        dest[lane] = layout_capture.base[idx];
       }
     }
     #if EIGFFT_TRACE_STOCKHAM
@@ -3096,8 +3097,8 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
       timing_internal::ScopedTimer __t_post_store(timing_internal::Bin::PostButterfly);
   #endif
       for (int i = 0; i < N; ++i) {
-        const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
-  const Complex* src = final_buf + i * lane_capacity;
+        const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(layout_capture.axis_stride);
+        const Complex* src = final_buf + i * lane_capacity;
         for (int lane = 0; lane < safe_width; ++lane) {
           const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
           const ptrdiff_t idx = base_idx + off;
@@ -3109,7 +3110,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
             TraceLogger::instance().log(_oss.str());
             return;
           }
-          layout.base[idx] = src[lane] * scale;
+          layout_capture.base[idx] = src[lane] * scale;
         }
       }
     } else {
@@ -3121,9 +3122,9 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
 #if EIGFFT_TIMING
   timing_internal::ScopedTimer __t_post_store2(timing_internal::Bin::PostButterfly);
 #endif
-  for (int i = 0; i < N; ++i) {
-        const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(axis_stride);
-const Complex* src = final_buf + i * lane_capacity;
+      for (int i = 0; i < N; ++i) {
+        const ptrdiff_t off = ptrdiff_t(i) * ptrdiff_t(layout_capture.axis_stride);
+        const Complex* src = final_buf + i * lane_capacity;
         for (int lane = 0; lane < safe_width; ++lane) {
           const ptrdiff_t base_idx = lane_bases[static_cast<size_t>(lane)];
           const ptrdiff_t idx = base_idx + off;
@@ -3135,7 +3136,7 @@ const Complex* src = final_buf + i * lane_capacity;
             TraceLogger::instance().log(_oss.str());
             return;
           }
-          layout.base[idx] = src[lane];
+          layout_capture.base[idx] = src[lane];
         }
       }
     }
