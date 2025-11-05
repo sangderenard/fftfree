@@ -176,6 +176,18 @@ extern "C" {
                                            int pad_mode,
                                            int enable_backup,
                                            size_t max_frames);
+
+        FFT_CFFI_API int fft_griffin_lim(void* ctx_forward,
+                                         void* ctx_inverse,
+                                         const float* in_mag,
+                                         size_t frames,
+                                         int hop,
+                                         int half_spectrum,
+                                         int iterations,
+                                         int pad_mode,
+                                         unsigned int seed,
+                                         float* out_real,
+                                         float* out_imag);
     // Execute inverse (or complex-input) batched transforms using complex inputs.
     // in_real/in_imag: flattened frame-major arrays with `frames * bins` entries
     // bins = ctx_N if not half_spectrum, otherwise (N/2 + 1).

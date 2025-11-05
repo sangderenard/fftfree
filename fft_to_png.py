@@ -198,6 +198,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
+        dest="output_mode",
         choices=["mag", "rgb"],
         default="mag",
         help="Image output: mag (grayscale magnitude) or rgb (real/imag/mag stack)",
@@ -222,6 +223,11 @@ def _parse_args() -> argparse.Namespace:
         "--no-image",
         action="store_true",
         help="Skip writing the FFT visualization PNG",
+    )
+    parser.add_argument(
+        "--flip-ud",
+        action="store_true",
+        help="Flip the output image vertically so low frequencies appear at the bottom",
     )
     # Magnitude display mapping: default to a non-destructive nonlinear (log1p) mapping
     parser.add_argument(
@@ -579,8 +585,8 @@ def main() -> None:
                 return
 
             from PIL.PngImagePlugin import PngInfo
-            orient = "bins_top"  # rows=frequency bins from 0..Nyquist at image top
-            if args.output == "rgb":
+            orient = "bins_bottom" if args.flip_ud else "bins_top"
+            if args.output_mode == "rgb":
                 # Real/imag linear normalization; magnitude optionally dB
                 # Capture channel min/max so RGB can be inverted to linear complex for baselines.
                 real_min = float(np.min(out_real)) if out_real.size else 0.0
@@ -610,11 +616,15 @@ def main() -> None:
                 else:
                     # Per-frame dB or log1p are not strictly invertible from image alone
                     meta.add_text("FFTFREE_INVERTIBLE", "0")
+                if args.flip_ud:
+                    img2d = np.flipud(img2d)
                 Image.fromarray(img2d, "RGB").save(args.output, pnginfo=meta)
                 print(f"Saved FFT image to {args.output} using {lib_path} with shape {img2d.shape} (mag-scale={args.scale}, ref={args.db_ref}, floor={args.db_floor} dB)")
             else:
                 # Magnitude-only grayscale. Prefer dB mapping by default.
                 mag_u8 = _mag_viz_u8(mag_mat_lin)
+                if args.flip_ud:
+                    mag_u8 = np.flipud(mag_u8)
                 meta = PngInfo()
                 meta.add_text("FFTFREE_FMT", "mag")
                 meta.add_text("FFTFREE_CHANNELS", "L=mag")

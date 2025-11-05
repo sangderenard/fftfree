@@ -14,6 +14,22 @@
 #define EIGFFT_TRACE_THREADS 0
 #endif
 
+#ifndef FFTFREE_CT_FORCE_INLINE_PERMUTE
+#define FFTFREE_CT_FORCE_INLINE_PERMUTE 0
+#endif
+
+#ifndef FFTFREE_CT_FORCE_INLINE_ALL_STAGES
+#define FFTFREE_CT_FORCE_INLINE_ALL_STAGES 0
+#endif
+
+#ifndef FFTFREE_CT_FORCE_INLINE_STAGE
+#define FFTFREE_CT_FORCE_INLINE_STAGE -1
+#endif
+
+#ifndef FFTFREE_CT_FORCE_INLINE_KEEP_DISPATCH
+#define FFTFREE_CT_FORCE_INLINE_KEEP_DISPATCH 1
+#endif
+
 
 // eigen_fft.hpp (header-only)
 #pragma once
@@ -22,14 +38,18 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
+#include <cstdlib>
 #include <cstddef>
 #include <cmath>
 #include <complex>
+#include <cstring>
 #include <random>
 #include <condition_variable>
 #include <functional>
 #include <iostream>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -141,6 +161,108 @@ struct WorkerPoolDebug {
     dropped_once().clear();
   }
 };
+
+struct CooleyTukeyDebugConfig {
+  bool force_inline_permute = false;
+  bool force_inline_all_stages = false;
+  std::vector<int> stage_inline_indices;
+  bool preserve_outer_dispatch = FFTFREE_CT_FORCE_INLINE_KEEP_DISPATCH != 0;
+
+  bool stage_inline(int stage) const {
+    if (stage < 0) return false;
+    if (force_inline_all_stages) return true;
+    return std::find(stage_inline_indices.begin(), stage_inline_indices.end(), stage) != stage_inline_indices.end();
+  }
+};
+
+inline bool env_flag_enabled(const char* value) {
+  if (!value) return false;
+  while (*value && std::isspace(static_cast<unsigned char>(*value))) ++value;
+  std::string lowered(value);
+  if (lowered.empty()) return true;
+  std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (lowered == "0" || lowered == "false" || lowered == "off" || lowered == "no") return false;
+  return true;
+}
+
+inline void append_stage_index(std::vector<int>& indices, int value) {
+  if (value < 0) return;
+  if (std::find(indices.begin(), indices.end(), value) == indices.end()) {
+    indices.push_back(value);
+  }
+}
+
+inline CooleyTukeyDebugConfig load_cooleytukey_debug_config() {
+  CooleyTukeyDebugConfig cfg;
+  if (env_flag_enabled(std::getenv("FFTFREE_CT_INLINE_PERMUTE"))) {
+    cfg.force_inline_permute = true;
+  }
+
+  if (env_flag_enabled(std::getenv("FFTFREE_CT_INLINE_ALL_STAGES"))) {
+    cfg.force_inline_all_stages = true;
+  }
+
+  const char* preserve_env = std::getenv("FFTFREE_CT_INLINE_KEEP_DISPATCH");
+  if (preserve_env) {
+    cfg.preserve_outer_dispatch = env_flag_enabled(preserve_env);
+  }
+
+  const char* stage_env = std::getenv("FFTFREE_CT_INLINE_STAGE");
+  if (stage_env && *stage_env) {
+    std::string lowered(stage_env);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    if (lowered == "all" || lowered == "*" || lowered == "true" || lowered == "on") {
+      cfg.force_inline_all_stages = true;
+    } else {
+      const char* ptr = stage_env;
+      while (*ptr) {
+        while (*ptr && (std::isspace(static_cast<unsigned char>(*ptr)) || *ptr == ',' || *ptr == ';' || *ptr == ':')) {
+          ++ptr;
+        }
+        if (!*ptr) break;
+        char* end = nullptr;
+        long value = std::strtol(ptr, &end, 10);
+        if (ptr == end) {
+          ++ptr;
+          continue;
+        }
+        if (value >= 0 && value <= std::numeric_limits<int>::max()) {
+          append_stage_index(cfg.stage_inline_indices, static_cast<int>(value));
+        }
+        ptr = end;
+      }
+    }
+  }
+
+#if FFTFREE_CT_FORCE_INLINE_PERMUTE
+  cfg.force_inline_permute = true;
+#endif
+#if FFTFREE_CT_FORCE_INLINE_ALL_STAGES
+  cfg.force_inline_all_stages = true;
+#endif
+#if FFTFREE_CT_FORCE_INLINE_STAGE >= 0
+  append_stage_index(cfg.stage_inline_indices, static_cast<int>(FFTFREE_CT_FORCE_INLINE_STAGE));
+#endif
+
+  if (cfg.force_inline_all_stages) {
+    cfg.stage_inline_indices.clear();
+  } else if (!cfg.stage_inline_indices.empty()) {
+    std::sort(cfg.stage_inline_indices.begin(), cfg.stage_inline_indices.end());
+    cfg.stage_inline_indices.erase(std::unique(cfg.stage_inline_indices.begin(), cfg.stage_inline_indices.end()),
+                                   cfg.stage_inline_indices.end());
+  }
+
+  return cfg;
+}
+
+inline const CooleyTukeyDebugConfig& cooleytukey_debug_config() {
+  static CooleyTukeyDebugConfig cfg = load_cooleytukey_debug_config();
+  return cfg;
+}
 } // namespace detail
 
 
@@ -2543,6 +2665,7 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   metadata.record_plan_twiddles(P);
   const detail::OmegaMetadataWriter<T> omega(layout, static_cast<std::size_t>(N));
   omega.fill(P);
+  const detail::CooleyTukeyDebugConfig& ct_debug = detail::cooleytukey_debug_config();
 
   // Pre-butterfly transform hook (e.g., R2C imag clear)
   detail::apply_pre_transform(P, layout);
@@ -2638,6 +2761,17 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
   }
   const RecoveryOps permute_ops = enable_recovery ? make_column_recovery_ops<T>(permute_recovery)
                                                   : RecoveryOps{};
+  // Optional runtime tracking for permute access conflicts and OOBs.
+#if defined(EIGFFT_DEBUG_PERMUTE)
+  const bool debug_permute_track = (std::getenv("FFTFREE_DEBUG_PERMUTE_TRACK") != nullptr);
+  // Track map keyed by byte address -> owner worker id. Protected by mutex.
+  static std::mutex permute_track_mutex;
+  static std::unordered_map<std::uintptr_t, int> permute_track_map;
+#else
+  // When compile-time guard is disabled, keep a cheap false constant so
+  // any remaining runtime checks (should be none) are dead-code.
+  const bool debug_permute_track = false;
+#endif
 
   {
     auto permute_fn = [&](size_t start, size_t end, int worker_id) {
@@ -2675,16 +2809,74 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
           const Eigen::Index src_offset = Eigen::Index(src) * axis_stride;
           for (int lane = 0; lane < width; ++lane) {
             Complex* column_ptr = columns[static_cast<size_t>(lane)];
+#if defined(EIGFFT_DEBUG_PERMUTE)
+            // Optional conflict/OOB checks when debugging permute.
+            if (debug_permute_track) {
+              const char* base_ptr = reinterpret_cast<const char*>(layout.base);
+              const std::uintptr_t base_addr = reinterpret_cast<std::uintptr_t>(base_ptr);
+              const char* dst_ptr = reinterpret_cast<const char*>(column_ptr + dst_offset);
+              const char* src_ptr = reinterpret_cast<const char*>(column_ptr + src_offset);
+              const std::uintptr_t dst_addr = reinterpret_cast<std::uintptr_t>(dst_ptr);
+              const std::uintptr_t src_addr = reinterpret_cast<std::uintptr_t>(src_ptr);
+              // Compute max valid byte address for quick OOB detection.
+              const ptrdiff_t max_elem_offset = (layout.batch_size > 0 && layout.axis_size > 0)
+                                                     ? (ptrdiff_t(layout.batch_size - 1) * ptrdiff_t(batch_stride) +
+                                                        ptrdiff_t(layout.axis_size - 1) * ptrdiff_t(axis_stride))
+                                                     : ptrdiff_t(0);
+              const std::uintptr_t max_addr = base_addr + static_cast<std::uintptr_t>(max_elem_offset) * sizeof(Complex);
+              if (dst_addr < base_addr || dst_addr > max_addr || src_addr < base_addr || src_addr > max_addr) {
+                std::ostringstream _oss;
+                _oss << "[permute-debug] OOB detected worker=" << worker_id
+                     << " dst_addr=" << std::hex << dst_addr << " src_addr=" << src_addr << std::dec
+                     << " base=" << reinterpret_cast<const void*>(base_ptr)
+                     << " max_offset=" << max_elem_offset;
+                std::cerr << _oss.str() << std::endl;
+              } else {
+                // Record ownership and detect if another worker already touched this address.
+                {
+                  std::lock_guard<std::mutex> g(permute_track_mutex);
+                  auto it = permute_track_map.find(dst_addr);
+                  if (it != permute_track_map.end() && it->second != worker_id) {
+                    std::ostringstream _oss;
+                    _oss << "[permute-debug] conflict dst addr " << std::hex << dst_addr << std::dec
+                         << " prev_worker=" << it->second << " curr_worker=" << worker_id
+                         << " i=" << i << " lane=" << lane << " col=" << col;
+                    std::cerr << _oss.str() << std::endl;
+                  }
+                  permute_track_map[dst_addr] = worker_id;
+                }
+                {
+                  std::lock_guard<std::mutex> g(permute_track_mutex);
+                  auto it2 = permute_track_map.find(src_addr);
+                  if (it2 != permute_track_map.end() && it2->second != worker_id) {
+                    std::ostringstream _oss;
+                    _oss << "[permute-debug] conflict src addr " << std::hex << src_addr << std::dec
+                         << " prev_worker=" << it2->second << " curr_worker=" << worker_id
+                         << " src=" << src << " i=" << i << " lane=" << lane << " col=" << col;
+                    std::cerr << _oss.str() << std::endl;
+                  }
+                  permute_track_map[src_addr] = worker_id;
+                }
+              }
+            }
+#endif
             std::swap(column_ptr[dst_offset], column_ptr[src_offset]);
           }
         }
       }
     };
-    // Dispatch permute work via the Plan dispatcher (worker pool or inline).
-    P.dispatcher()->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, permute_fn,
-                                              std::function<void(size_t,size_t)>(),
-                                              permute_ops,
-                                              enable_recovery ? static_cast<void*>(&permute_recovery) : nullptr);
+    // Dispatch permute work via either the plan dispatcher or a forced inline override.
+    JobDispatcher* permute_dispatcher = P.dispatcher();
+    if (ct_debug.force_inline_permute && !ct_debug.preserve_outer_dispatch) {
+  permute_dispatcher = &InlineDispatcher::instance();
+#if EIGFFT_TRACE_THREADS
+  TraceLogger::instance().log(std::string("[ct] permute forced inline"));
+#endif
+    }
+    permute_dispatcher->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, permute_fn,
+                  std::function<void(size_t,size_t)>(),
+                  permute_ops,
+                  enable_recovery ? static_cast<void*>(&permute_recovery) : nullptr);
   }
   
 #if EIGFFT_TRACE_THREADS
@@ -2834,13 +3026,26 @@ inline void cooleytukey_execute_axis(const Plan<T>& P, const AxisLayout<T>& layo
       TraceLogger::instance().log(_oss.str());
     }
 #endif
-    // Dispatch stage work via the Plan dispatcher (worker pool or inline).
-    P.dispatcher()->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, stage_chunk,
-                                              std::function<void(size_t,size_t)>(),
-                                              stage_ops,
-                                              (enable_recovery && stage_ops.init)
-                                                  ? static_cast<void*>(&stage_recovery)
-                                                  : nullptr);
+    // Dispatch stage work via the plan dispatcher, unless debugging forces inline execution.
+    JobDispatcher* stage_dispatcher = P.dispatcher();
+    const bool stage_inline_override = ct_debug.stage_inline(stage_idx);
+    if (stage_inline_override && !ct_debug.preserve_outer_dispatch) {
+      stage_dispatcher = &InlineDispatcher::instance();
+#if EIGFFT_TRACE_THREADS
+      {
+        std::ostringstream _oss;
+        _oss << "[ct] stage forced inline stage_idx=" << stage_idx;
+        TraceLogger::instance().log(_oss.str());
+      }
+#endif
+    }
+    void* stage_ctx = (enable_recovery && stage_ops.init)
+                          ? static_cast<void*>(&stage_recovery)
+                          : nullptr;
+    stage_dispatcher->parallel_for_with_restore(static_cast<size_t>(chunk_count), 1, stage_chunk,
+                                                std::function<void(size_t,size_t)>(),
+                                                stage_ops,
+                                                stage_ctx);
 #if EIGFFT_TRACE_THREADS
     {
       std::ostringstream _oss;
@@ -3184,7 +3389,7 @@ void stockham_execute_axis(const Plan<T>& P, const AxisLayout<T>& layout, Kernel
     Complex* stage_in = state->arena.stockham_ping + slot * buffer_stride;
     Complex* stage_out = state->arena.stockham_pong + slot * buffer_stride;
     std::ptrdiff_t* lane_bases = state->arena.stockham_lane_bases + slot * lane_stride;
-#if defined(EIGFFT_RUNTIME_INSTRUMENTATION)
+#if EIGFFT_RUNTIME_INSTRUMENTATION
   // Print per-worker slot mapping and arena pointers to detect aliasing.
   std::cerr << "[stockham-instr] worker=" << worker_id
         << " slot=" << slot

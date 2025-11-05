@@ -17,6 +17,10 @@
 #include <thread>
 #include <limits>
 #include <utility>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <cctype>
 #if defined(_WIN32)
 #include <windows.h>
 #endif
@@ -73,6 +77,79 @@ struct FftContext {
 // Forward declarations for window helpers used by fft_init_full
 static void normalize_window(std::vector<float>& w, int policy);
 static std::vector<float> build_window(int kind, int W, float p1, float p2);
+
+static std::string trim_and_lower(std::string value) {
+    auto begin = value.begin();
+    while (begin != value.end() && std::isspace(static_cast<unsigned char>(*begin))) {
+        ++begin;
+    }
+    auto end = value.end();
+    while (end != begin && std::isspace(static_cast<unsigned char>(*(end - 1)))) {
+        --end;
+    }
+    std::string trimmed(begin, end);
+    std::transform(trimmed.begin(), trimmed.end(), trimmed.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return trimmed;
+}
+
+static int parse_kernel_token(const std::string& token) {
+    if (token.empty() || token == "0" || token == "auto" || token == "default") {
+        return 0;
+    }
+    if (token == "cooleytukey" || token == "cooley" || token == "cooley-tukey" || token == "cooley_tukey" || token == "ct") {
+        return FFT_KERNEL_COOLEYTUKEY;
+    }
+    if (token == "stockham" || token == "stock" || token == "sh") {
+        return FFT_KERNEL_STOCKHAM;
+    }
+    if (token == "external" || token == "ext" || token == "custom") {
+        return FFT_KERNEL_EXTERNAL;
+    }
+    char* end = nullptr;
+    long parsed = std::strtol(token.c_str(), &end, 10);
+    if (end && *end == '\0') {
+        if (parsed == FFT_KERNEL_COOLEYTUKEY || parsed == FFT_KERNEL_STOCKHAM || parsed == FFT_KERNEL_EXTERNAL) {
+            return static_cast<int>(parsed);
+        }
+    }
+    return 0;
+}
+
+static int env_default_kernel_override() {
+    static const int cached = []() {
+        const char* env = std::getenv("FFTFREE_DEFAULT_KERNEL");
+        if (!env) {
+            return 0;
+        }
+        const std::string raw(env);
+        const std::string lowered = trim_and_lower(raw);
+        if (lowered.empty()) {
+            return 0;
+        }
+        const int mapped = parse_kernel_token(lowered);
+        if (mapped != 0) {
+            std::fprintf(stderr, "[diag] FFTFREE_DEFAULT_KERNEL override: %s -> %d\n", raw.c_str(), mapped);
+#if defined(_WIN32)
+            if (!fftfree::crash_handler_silent_enabled()) {
+                std::string msg = "[diag] FFTFREE_DEFAULT_KERNEL override: " + raw + " -> " + std::to_string(mapped) + "\n";
+                OutputDebugStringA(msg.c_str());
+            }
+#endif
+        } else {
+            std::fprintf(stderr, "[diag] FFTFREE_DEFAULT_KERNEL ignored: %s (expected cooleytukey|stockham|external|0|1|2)\n", raw.c_str());
+#if defined(_WIN32)
+            if (!fftfree::crash_handler_silent_enabled()) {
+                std::string msg = "[diag] FFTFREE_DEFAULT_KERNEL ignored: " + raw + " (expected cooleytukey|stockham|external|0|1|2)\n";
+                OutputDebugStringA(msg.c_str());
+            }
+#endif
+        }
+        return mapped;
+    }();
+    return cached;
+}
 
 // Window helper implementations placed before usage to avoid forward-declare/linkage issues
 static inline double kPI_constexpr() { return 3.141592653589793238462643383279502884; }
@@ -132,7 +209,7 @@ static eigfft::PlanRuntimeConfig compute_effective_runtime(const FftContext& ctx
             outer_threads = pool_threads;
         }
     }
-    const bool allow_inner = (ctx.allow_inner_parallel != 0) && outer_threads <= 1;
+    const bool allow_inner = (ctx.allow_inner_parallel != 0);
     int inner_budget = 0;
     if (allow_inner) {
         if (ctx.inner_threads > 0) {
@@ -150,8 +227,21 @@ static eigfft::PlanRuntimeConfig compute_effective_runtime(const FftContext& ctx
     cfg.threads = plan_threads;
     cfg.allow_inner_parallel = allow_inner;
     cfg.inner_threads = allow_inner ? ctx.inner_threads : 0;
+    if (allow_inner && outer_threads > 1) {
+        static std::once_flag permute_hint_flag;
+        std::call_once(permute_hint_flag, [outer_threads]() {
+            std::fprintf(stderr, "[diag] compute_effective_runtime: inner parallelism active with %d outer threads. To serialize only the permute stage build with -DFFTFREE_CT_FORCE_INLINE_PERMUTE=1.\n", outer_threads);
+#if defined(_WIN32)
+            if (!fftfree::crash_handler_silent_enabled()) {
+                std::string msg = "[diag] compute_effective_runtime: use -DFFTFREE_CT_FORCE_INLINE_PERMUTE=1 to serialize the permute stage when inner parallelism is enabled.\n";
+                OutputDebugStringA(msg.c_str());
+            }
+#endif
+        });
+    }
 
     // Keep inner parallelism as computed above; do not force-disable.
+#if EIGFFT_RUNTIME_INSTRUMENTATION
     {
         int pool_sz = ctx.pool ? ctx.pool->size() : 0;
         fprintf(stderr, "[diag] compute_effective_runtime: allow_inner_parallel=%d inner_threads=%d pool=%d outer_threads=%d effective_threads=%d\n",
@@ -162,6 +252,7 @@ static eigfft::PlanRuntimeConfig compute_effective_runtime(const FftContext& ctx
         }
 #endif
     }
+#endif
     return cfg;
 }
 
@@ -434,6 +525,12 @@ void* fft_init_ex(size_t n, int threads, int lanes, int inverse, int kernel, int
         ctx->N = static_cast<int>(n);
         ctx->inverse = (inverse != 0);
         ctx->kernel = kernel;
+        if (ctx->kernel == 0) {
+            const int env_kernel = env_default_kernel_override();
+            if (env_kernel != 0) {
+                ctx->kernel = env_kernel;
+            }
+        }
         ctx->radix = radix;
         ctx->pad_mode = pad_mode;
         ctx->window = window;
@@ -1174,23 +1271,53 @@ size_t fft_execute_complex_batched(void* handle,
             }
 
             // Copy outputs
-            if (ctx->inverse) {
+            if (ctx->apply_ola) {
+                const int H = (ctx->hop > 0) ? ctx->hop : ((ctx->window > 0) ? ctx->window : ctx->N);
+                const size_t max_len = frames * plan_n;
+                for (size_t t = 0; t < max_len; ++t) out_pcm[t] = 0.0f;
+                std::vector<float> norm;
+                if (ctx->cola_mode == FFT_COLA_NORMALIZE) norm.assign(max_len, 0.0f);
                 for (size_t f = 0; f < frames; ++f) {
-                    const size_t out_base = f * plan_n;
                     const size_t col_base = f * plan_n;
-                    for (size_t i = 0; i < plan_n; ++i) out_pcm[out_base + i] = buffer[col_base + i].real();
+                    const size_t start = f * static_cast<size_t>(H);
+                    for (size_t i = 0; i < plan_n; ++i) {
+                        float s = buffer[col_base + i].real();
+                        if (ctx->windows_enabled && !ctx->synthesis_win.empty()) s *= ctx->synthesis_win[i];
+                        const size_t t = start + i;
+                        if (t < max_len) {
+                            out_pcm[t] += s;
+                            if (!norm.empty()) {
+                                if (ctx->windows_enabled && !ctx->synthesis_win.empty()) {
+                                    float w = ctx->synthesis_win[i];
+                                    norm[t] += w * w;
+                                } else {
+                                    norm[t] += 1.0f;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!norm.empty()) {
+                    for (size_t t = 0; t < max_len; ++t) {
+                        if (norm[t] > 1e-12f) out_pcm[t] /= norm[t];
+                    }
                 }
             } else {
                 for (size_t f = 0; f < frames; ++f) {
                     const size_t out_base = f * plan_n;
                     const size_t col_base = f * plan_n;
-                    for (size_t i = 0; i < plan_n; ++i) out_pcm[out_base + i] = buffer[col_base + i].real();
+                    for (size_t i = 0; i < plan_n; ++i) {
+                        float s = buffer[col_base + i].real();
+                        if (ctx->windows_enabled && !ctx->synthesis_win.empty()) s *= ctx->synthesis_win[i];
+                        out_pcm[out_base + i] = s;
+                    }
                 }
             }
             return frames;
         }
 
         // (removed duplicate non-recovery path)
+        return 0;
     } catch (...) {
         return 0;
     }
@@ -1623,5 +1750,79 @@ extern "C" FFT_CFFI_API void phase_free(void* handle) {
     if (!handle) return;
     PhaseCtx* c = static_cast<PhaseCtx*>(handle);
     delete c;
+}
+
+extern "C" FFT_CFFI_API int fft_griffin_lim(void* ctx_forward,
+                                            void* ctx_inverse,
+                                            const float* in_mag,
+                                            size_t frames,
+                                            int hop,
+                                            int half_spectrum,
+                                            int iterations,
+                                            int pad_mode,
+                                            unsigned int seed,
+                                            float* out_real,
+                                            float* out_imag) {
+    if (!ctx_forward || !ctx_inverse || !in_mag || !out_real || !out_imag || frames == 0) {
+        return 0;
+    }
+    if (in_mag == out_real || in_mag == out_imag || out_real == out_imag) {
+#if EIGFFT_RUNTIME_INSTRUMENTATION
+        std::fprintf(stderr,
+                     "[diag] fft_griffin_lim rejected aliased buffers (mag=%p real=%p imag=%p)\n",
+                     static_cast<const void*>(in_mag),
+                     static_cast<const void*>(out_real),
+                     static_cast<const void*>(out_imag));
+#if defined(_WIN32)
+        if (!fftfree::crash_handler_silent_enabled()) {
+            std::string msg = "[diag] fft_griffin_lim rejected aliased buffers\n";
+            OutputDebugStringA(msg.c_str());
+        }
+#endif
+#endif
+        return 0;
+    }
+    auto* fwd_ctx = static_cast<FftContext*>(ctx_forward);
+    auto* inv_ctx = static_cast<FftContext*>(ctx_inverse);
+    if (!fwd_ctx || !inv_ctx) {
+        return 0;
+    }
+
+    phaseinfer::PhaseConfig cfg;
+    cfg.N = (inv_ctx->N > 0) ? inv_ctx->N : fwd_ctx->N;
+    if (cfg.N <= 0) {
+        return 0;
+    }
+    cfg.half_spectrum = (half_spectrum != 0);
+    if (cfg.half_spectrum != (inv_ctx->half_spectrum != 0) ||
+        cfg.half_spectrum != (fwd_ctx->half_spectrum != 0)) {
+        // Ensure expectations match contexts.
+        return 0;
+    }
+
+    if (hop > 0) {
+        cfg.hop = hop;
+    } else if (inv_ctx->hop > 0) {
+        cfg.hop = inv_ctx->hop;
+    } else if (fwd_ctx->hop > 0) {
+        cfg.hop = fwd_ctx->hop;
+    } else {
+        cfg.hop = cfg.N;
+    }
+
+    cfg.iterations = iterations;
+
+    const bool ok = phaseinfer::infer_griffin_lim(
+        in_mag,
+        frames,
+        cfg,
+        ctx_forward,
+        ctx_inverse,
+        out_real,
+        out_imag,
+        iterations,
+        pad_mode,
+        seed);
+    return ok ? 1 : 0;
 }
 }

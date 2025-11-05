@@ -17,8 +17,8 @@ namespace eigfft {
 
 #ifndef EIGFFT_RUNTIME_INSTRUMENTATION
 // Enable to print lightweight runtime instrumentation for debugging
-// worker <-> arena slot mappings. Remove or undefine for normal builds.
-#define EIGFFT_RUNTIME_INSTRUMENTATION 1
+// worker <-> arena slot mappings. Set to 1 via build flags when needed.
+#define EIGFFT_RUNTIME_INSTRUMENTATION 0
 #endif
 
 struct PlanRuntimeConfig {
@@ -573,7 +573,7 @@ class PlanCache {
       if (!entry.in_use) {
         entry.in_use = true;
         Slot s{i, &entry.env->plan(), entry.env.get()};
-#if defined(EIGFFT_RUNTIME_INSTRUMENTATION)
+#if EIGFFT_RUNTIME_INSTRUMENTATION
         // Lightweight instrumentation: print which cache entry and arena
         // address was handed out for debugging concurrent slot aliasing.
         std::cerr << "[plancache] reuse entry index=" << s.index
@@ -593,7 +593,7 @@ class PlanCache {
   bucket.entries.push_back({std::move(env), true});
   CachedEntry& entry = bucket.entries.back();
   Slot s{bucket.entries.size() - 1, &entry.env->plan(), entry.env.get()};
-#if defined(EIGFFT_RUNTIME_INSTRUMENTATION)
+#if EIGFFT_RUNTIME_INSTRUMENTATION
   std::cerr << "[plancache] new entry index=" << s.index
         << " env=" << static_cast<const void*>(s.env)
         << " arena=" << static_cast<const void*>(&s.env->arena())

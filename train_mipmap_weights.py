@@ -42,17 +42,21 @@ This will:
 from __future__ import annotations
 
 import argparse
+import math
 import os
+import queue
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from cffi import FFI
+from scipy import signal as sp_signal
 from scipy.io import wavfile
 
 
@@ -299,19 +303,17 @@ class CffiFft:
         out_real = np.zeros(max_frames * bins, dtype=np.float32)
         out_imag = np.zeros(max_frames * bins, dtype=np.float32)
         out_mag = np.zeros(max_frames * bins, dtype=np.float32)
-        produced = int(
-            self.lib.fft_execute_batched(
-                plan.handle,
-                self.ffi.cast("float *", pcm.ctypes.data),
-                int(pcm.size),
-                self.ffi.cast("float *", out_real.ctypes.data),
-                self.ffi.cast("float *", out_imag.ctypes.data),
-                self.ffi.cast("float *", out_mag.ctypes.data),
-                1,  # pad last
-                1,  # enable_backup
-                0,
-            )
-        )
+        produced = int(self.lib.fft_execute_batched(
+            plan.handle,
+            self.ffi.cast("float *", pcm.ctypes.data),
+            int(pcm.size),
+            self.ffi.cast("float *", out_real.ctypes.data),
+            self.ffi.cast("float *", out_imag.ctypes.data),
+            self.ffi.cast("float *", out_mag.ctypes.data),
+            1,  # pad last
+            1,  # enable_backup
+            0,
+        ))
         if produced <= 0:
             raise RuntimeError("fft_execute_batched failed")
         used = produced * bins
@@ -338,18 +340,16 @@ class CffiFft:
             in_real[base:base + bins] = real[:, f]
             in_imag[base:base + bins] = imag[:, f]
         out_frames = np.zeros(frames * plan.n, dtype=np.float32)
-        produced = int(
-            self.lib.fft_execute_complex_batched(
-                plan.handle,
-                self.ffi.cast("float *", in_real.ctypes.data),
-                self.ffi.cast("float *", in_imag.ctypes.data),
-                int(frames),
-                self.ffi.cast("float *", out_frames.ctypes.data),
-                1,
-                1,
-                0,
-            )
-        )
+        produced = int(self.lib.fft_execute_complex_batched(
+            plan.handle,
+            self.ffi.cast("float *", in_real.ctypes.data),
+            self.ffi.cast("float *", in_imag.ctypes.data),
+            int(frames),
+            self.ffi.cast("float *", out_frames.ctypes.data),
+            1,
+            1,
+            0,
+        ))
         if produced <= 0:
             raise RuntimeError("fft_execute_complex_batched failed")
         # If C did OLA internally, extract overlapped length and return
@@ -378,15 +378,17 @@ class ISTFT_CFFI_Function(torch.autograd.Function):
         cffi, inv_plan, fwd_plan = plans
         B, Freq, Frames = real.shape
         outs = []
+        input_device = real.device
         for b in range(B):
             r_np = real[b].detach().cpu().to(torch.float32).numpy()
             i_np = imag[b].detach().cpu().to(torch.float32).numpy()
             wav = cffi.istft(inv_plan, r_np, i_np)
-            outs.append(torch.from_numpy(wav))
+            outs.append(torch.from_numpy(wav).to(input_device))
         wav_pad = torch.nn.utils.rnn.pad_sequence(outs, batch_first=True)
         ctx.save_for_backward(torch.tensor([wav.shape[0] for wav in outs], dtype=torch.long))
         ctx.plans = plans
         ctx.spec_shape = (B, Freq, Frames)
+        ctx.input_device = input_device
         return wav_pad  # [B, T_out] (same T_out per-batch if frames constant)
 
     @staticmethod
@@ -395,14 +397,15 @@ class ISTFT_CFFI_Function(torch.autograd.Function):
         lengths, = ctx.saved_tensors
         cffi, inv_plan, fwd_plan = ctx.plans
         B, Freq, Frames = ctx.spec_shape
-        grad_real = torch.zeros((B, Freq, Frames), dtype=torch.float32)
-        grad_imag = torch.zeros((B, Freq, Frames), dtype=torch.float32)
+        device = ctx.input_device
+        grad_real = torch.zeros((B, Freq, Frames), dtype=torch.float32, device=device)
+        grad_imag = torch.zeros((B, Freq, Frames), dtype=torch.float32, device=device)
         for b in range(B):
             g = grad_out[b, : lengths[b].item()].detach().cpu().to(torch.float32).numpy()
             r, i, _m, bins, frames = cffi.stft(fwd_plan, g)
             # Align to expected (Freq, Frames)
-            r_t = torch.from_numpy(r)
-            i_t = torch.from_numpy(i)
+            r_t = torch.from_numpy(r).to(device)
+            i_t = torch.from_numpy(i).to(device)
             if r_t.shape != (Freq, Frames):
                 # Bilinear resize to match saved spec shape
                 r_t = _resize_2d(r_t.unsqueeze(0).unsqueeze(0), (Freq, Frames)).squeeze(0).squeeze(0)
@@ -468,6 +471,19 @@ def soft_histogram(x: torch.Tensor, bins: int = 64, minv: float = 0.0, maxv: flo
     return h
 
 
+def _nan_guard(name: str, tensor: torch.Tensor, clamp: Optional[float] = None) -> torch.Tensor:
+    if torch.isfinite(tensor).all():
+        return tensor
+    nan_count = torch.isnan(tensor).sum().item()
+    posinf_count = torch.isposinf(tensor).sum().item()
+    neginf_count = torch.isneginf(tensor).sum().item()
+    print(f"[nan] {name} non-finite detected (nan={nan_count}, +inf={posinf_count}, -inf={neginf_count})")
+    tensor = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+    if clamp is not None:
+        tensor = torch.clamp(tensor, min=-clamp, max=clamp)
+    return tensor
+
+
 def local_contrast_map(x: torch.Tensor, ksize: int = 7) -> torch.Tensor:
     # x: [B, 1, F, T] or [B, F, T]
     if x.ndim == 3:
@@ -489,6 +505,449 @@ def snr_loss(x_hat: torch.Tensor, x: torch.Tensor, eps: float = 1e-8) -> torch.T
     return (e / s).mean()
 
 
+def resample_to_rate(samples: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Resample a 1-D float32 signal to match ``dst_rate`` using polyphase FIR."""
+
+    if samples.size == 0 or src_rate == dst_rate:
+        return samples
+    if src_rate <= 0 or dst_rate <= 0:
+        raise ValueError("Sample rates must be positive for resampling")
+
+    g = math.gcd(int(src_rate), int(dst_rate))
+    up = int(dst_rate // g)
+    down = int(src_rate // g)
+    resampled = sp_signal.resample_poly(samples.astype(np.float32, copy=False), up, down)
+    return resampled.astype(np.float32, copy=False)
+
+
+def chunk_stream(data: np.ndarray,
+                 chunk: int,
+                 overlap_frac: float,
+                 loop: bool) -> Iterator[np.ndarray]:
+    """Yield sequential chunks from ``data`` with optional overlap and looping.
+
+    Parameters
+    ----------
+    data
+        1-D numpy array of audio samples (float32 recommended).
+    chunk
+        Number of samples per yielded segment.
+    overlap_frac
+        Fraction in [0, 0.95] describing how much of each chunk should be
+        re-used in the subsequent segment (0 -> disjoint, 0.5 -> 50% overlap).
+    loop
+        If True, wrap around to the beginning when the end is reached.
+    """
+
+    if chunk <= 0:
+        raise ValueError("chunk_stream requires chunk > 0")
+    if not 0.0 <= overlap_frac < 1.0:
+        raise ValueError("overlap_frac must be in [0.0, 1.0)")
+
+    total = int(data.shape[0])
+    if total == 0:
+        raise ValueError("chunk_stream received empty input")
+
+    step = int(round(chunk * (1.0 - overlap_frac)))
+    if step <= 0:
+        step = 1
+
+    cursor = 0
+    while True:
+        end = cursor + chunk
+        if end <= total:
+            seg = data[cursor:end]
+        else:
+            tail = data[cursor:]
+            if not loop:
+                if tail.size == 0:
+                    return
+                pad = chunk - tail.size
+                seg = np.pad(tail, (0, pad), mode="constant")
+                yield np.ascontiguousarray(seg)
+                return
+            needed = chunk - tail.size
+            pieces = [tail]
+            while needed > 0:
+                take = min(needed, total)
+                pieces.append(data[:take])
+                needed -= take
+            seg = np.concatenate(pieces, axis=0)
+        yield np.ascontiguousarray(seg)
+
+        if loop:
+            cursor = (cursor + step) % total
+        else:
+            cursor += step
+            if cursor >= total:
+                return
+
+
+class SpectrogramScroller:
+    """Maintain scrolling pygame visualization synced with streamed audio."""
+
+    def __init__(self,
+                 width: int,
+                 height: int,
+                 mode: str,
+                 history_frames: int,
+                 node_specs: Sequence[Tuple[int, int]],
+                 top_initial: Optional[str] = None,
+                 bottom_initial: Optional[str] = None):
+        import pygame
+
+        self.width = int(width)
+        self.height = int(height)
+        self.mode = mode
+        self.history_frames = history_frames if history_frames > 0 else self.width
+        self.node_specs = list(node_specs)
+        self.font = pygame.font.SysFont(None, 16)
+
+        self.series: Dict[str, Optional[np.ndarray]] = {}
+        self.labels: Dict[str, str] = {}
+        self.mode_sequence: List[str] = []
+        self.top_mode: str = "ref"
+        self.bottom_mode: str = "weights"
+        self.requested_top = (top_initial or "ref").lower()
+        self.requested_bottom = (bottom_initial or "weights").lower()
+
+    @staticmethod
+    def _to_numpy(x: torch.Tensor) -> np.ndarray:
+        return x.detach().cpu().numpy().astype(np.float32, copy=False)
+
+    def _append(self, buffer: Optional[np.ndarray], new: np.ndarray) -> np.ndarray:
+        if buffer is None:
+            if new.shape[1] <= self.history_frames:
+                return new.copy()
+            return new[:, -self.history_frames:].copy()
+        total_frames = buffer.shape[1] + new.shape[1]
+        if total_frames <= self.history_frames:
+            return np.concatenate([buffer, new], axis=1)
+        keep = self.history_frames - new.shape[1]
+        if keep <= 0:
+            return new[:, -self.history_frames:]
+        return np.concatenate([buffer[:, -keep:], new], axis=1)
+
+    def _store_series(self, key: str, value: np.ndarray) -> None:
+        existing = self.series.get(key)
+        self.series[key] = self._append(existing, value)
+
+    def _ensure_modes(self, node_count: int) -> None:
+        if self.mode_sequence:
+            return
+        self.mode_sequence = ["ref", "blend"] + [f"node{idx}" for idx in range(node_count)]
+        self.labels["ref"] = "Reference"
+        self.labels["blend"] = "Blend (weighted mix)"
+        for idx, spec in enumerate(self.node_specs):
+            n, hop = spec
+            self.labels[f"node{idx}"] = f"Node {idx} (N={n}, H={hop})"
+        self.labels["weights"] = "Weights (nodes x freq)"
+        self.mode_sequence.append("weights")
+        self.top_mode = self._resolve_mode(self.requested_top, "blend", allow_weights=False)
+        self.bottom_mode = self._resolve_mode(self.requested_bottom, "weights", allow_weights=True)
+
+    def _resolve_mode(self, requested: Optional[str], fallback: str, *, allow_weights: bool) -> str:
+        if not self.mode_sequence:
+            return fallback
+        if requested is None:
+            return fallback
+        key = requested.lower()
+        if key == "weights":
+            return "weights" if allow_weights else fallback
+        if key in self.mode_sequence and (allow_weights or key != "weights"):
+            return key
+        if key.startswith("node"):
+            return key if key in self.mode_sequence else fallback
+        return fallback
+
+    def update(self,
+               ref_log: torch.Tensor,
+               blend_log: torch.Tensor,
+               node_logs: Sequence[torch.Tensor],
+               weights: torch.Tensor) -> None:
+        ref_np = self._to_numpy(ref_log)
+        blend_np = self._to_numpy(blend_log)
+        weights_np = self._to_numpy(weights)
+        node_np_list = []
+        for idx, node_tensor in enumerate(node_logs):
+            key = f"node{idx}"
+            node_np = self._to_numpy(node_tensor)
+            node_np_list.append(node_np)
+            self._store_series(key, node_np)
+
+        if weights_np.ndim == 3 and len(node_np_list) == weights_np.shape[0]:
+            mags = []
+            for node_np in node_np_list:
+                mags.append(np.expm1(np.clip(node_np, 0.0, None)))
+            mags_stack = np.stack(mags, axis=0)
+            combined_mag = np.sum(np.clip(weights_np, 0.0, None) * mags_stack, axis=0)
+            combined_mag = np.clip(combined_mag, 0.0, None)
+            combined_log = np.log1p(combined_mag)
+        else:
+            combined_log = blend_np
+
+        if weights_np.ndim == 3:
+            weights_heat = weights_np.reshape(weights_np.shape[0] * weights_np.shape[1], weights_np.shape[2])
+        else:
+            weights_heat = weights_np
+
+        self._store_series("ref", ref_np)
+        self._store_series("blend", combined_log)
+        self._store_series("weights", weights_heat)
+        self._ensure_modes(len(node_logs))
+
+    @staticmethod
+    def _norm01(arr: np.ndarray) -> np.ndarray:
+        if arr.size == 0:
+            return np.zeros_like(arr)
+        mn = float(np.min(arr))
+        mx = float(np.max(arr))
+        if not np.isfinite(mn) or not np.isfinite(mx) or mx - mn <= 1e-12:
+            return np.zeros_like(arr)
+        return (arr - mn) / (mx - mn)
+
+    def _blank_surface(self, width: int, height: int):
+        import pygame
+
+        surf = pygame.Surface((width, max(0, height)))
+        surf.fill((0, 0, 0))
+        return surf
+
+    def _gray_surface(self, data: Optional[np.ndarray], width: int, height: int):
+        return self._make_panel_surface(data, width, height, palette="gray")
+
+    def _weights_surface(self, data: Optional[np.ndarray], width: int, height: int):
+        return self._make_panel_surface(data, width, height, palette="gray", stretch_rows=True)
+
+    def _make_panel_surface(self,
+                            data: Optional[np.ndarray],
+                            width: int,
+                            height: int,
+                            *,
+                            palette: str,
+                            stretch_rows: bool = False):
+        import pygame
+
+        if data is None or data.size == 0:
+            return self._blank_surface(width, height)
+        vals = self._norm01(data)
+        rows, frames = vals.shape
+        if rows == 0 or frames == 0:
+            return self._blank_surface(width, height)
+        # Keep only the most recent columns so we do not rescale horizontally
+        cols = min(frames, width)
+        vals = vals[:, -cols:]
+        if stretch_rows and rows < height:
+            repeat = max(1, height // rows)
+            vals = np.repeat(vals, repeat, axis=0)
+            if vals.shape[0] < height:
+                pad = height - vals.shape[0]
+                vals = np.concatenate([vals, np.tile(vals[-1:, :], (pad, 1))], axis=0)
+            rows = vals.shape[0]
+        img = np.flipud(vals)
+        if palette == "gray":
+            img_u8 = (img * 255.0).astype(np.uint8)
+            rgb = np.stack([img_u8.T, img_u8.T, img_u8.T], axis=2)
+        else:
+            raise ValueError(f"Unsupported palette {palette}")
+        surf = pygame.surfarray.make_surface(np.ascontiguousarray(rgb))
+        if surf.get_height() != height:
+            surf = pygame.transform.smoothscale(surf, (surf.get_width(), height))
+        if surf.get_width() == width:
+            return surf
+        base = self._blank_surface(width, height)
+        base.blit(surf, (width - surf.get_width(), 0))
+        return base
+
+    @staticmethod
+    def _surface_from_array(rgb: np.ndarray, width: int, height: int):
+        import pygame
+
+        surf = pygame.surfarray.make_surface(np.ascontiguousarray(rgb))
+        if surf.get_size() != (width, height):
+            surf = pygame.transform.smoothscale(surf, (width, height))
+        return surf
+
+    def cycle_mode(self, panel: str, step: int) -> None:
+        if not self.mode_sequence:
+            return
+        spectral_modes = [m for m in self.mode_sequence if m != "weights"]
+        if panel == "top":
+            if not spectral_modes:
+                return
+            idx = spectral_modes.index(self.top_mode) if self.top_mode in spectral_modes else 0
+            idx = (idx + step) % len(spectral_modes)
+            self.top_mode = spectral_modes[idx]
+        elif panel == "bottom":
+            pool = self.mode_sequence
+            if not pool:
+                return
+            idx = pool.index(self.bottom_mode) if self.bottom_mode in pool else 0
+            idx = (idx + step) % len(pool)
+            self.bottom_mode = pool[idx]
+
+    def mode_label(self, mode: str) -> str:
+        return self.labels.get(mode, mode)
+
+    def handle_key(self, key: int) -> None:
+        import pygame
+
+        if key == pygame.K_1:
+            self.cycle_mode("top", -1)
+        elif key == pygame.K_2:
+            self.cycle_mode("top", 1)
+        elif key == pygame.K_q:
+            self.cycle_mode("bottom", -1)
+        elif key == pygame.K_w:
+            self.cycle_mode("bottom", 1)
+
+    def _render_mode(self, key: str, width: int, height: int):
+        if key == "weights":
+            return self._weights_surface(self.series.get("weights"), width, height)
+        data = self.series.get(key)
+        return self._gray_surface(data, width, height)
+
+    def render(self, screen) -> None:
+        import pygame
+
+        W = self.width
+        H = self.height
+        top_h = int(round(H * 0.66))
+        bot_h = max(1, H - top_h)
+
+        top_surface = self._render_mode(self.top_mode, W, top_h)
+        bottom_surface = self._render_mode(self.bottom_mode, W, bot_h)
+
+        screen.blit(top_surface, (0, 0))
+        screen.blit(bottom_surface, (0, top_h))
+
+        if self.font is not None:
+            top_label = self.font.render(f"Top: {self.mode_label(self.top_mode)} (1/2)", True, (255, 255, 0))
+            bottom_label = self.font.render(f"Bottom: {self.mode_label(self.bottom_mode)} (Q/W)", True, (200, 200, 200))
+            screen.blit(top_label, (6, 6))
+            screen.blit(bottom_label, (6, top_h + 6))
+
+
+class AudioStreamer:
+    """Background audio playback worker that consumes numpy buffers asynchronously."""
+
+    def __init__(self,
+                 mixer_channel,
+                 input_sr: int,
+                 device_sr: int,
+                 gain: float,
+                 stream_step: Optional[int],
+                 max_queue: int = 8):
+        import pygame
+
+        self.channel = mixer_channel
+        self.input_sr = int(input_sr)
+        self.device_sr = int(device_sr) if device_sr > 0 else int(input_sr)
+        self.gain = float(gain)
+        self.stream_step = int(stream_step) if stream_step else None
+        self.queue: "queue.Queue[np.ndarray | None]" = queue.Queue(maxsize=max(1, max_queue))
+        self.thread = threading.Thread(target=self._worker, name="AudioStreamer", daemon=True)
+        self.running = True
+        self.prime_full = True if self.stream_step else False
+        init = pygame.mixer.get_init()
+        self.channels = int(init[2]) if init else 1
+        self.guard: List[object] = []
+        self.thread.start()
+
+    def push(self, samples: np.ndarray) -> None:
+        if not self.running:
+            return
+        if samples is None or samples.size == 0:
+            return
+        try:
+            self.queue.put_nowait(samples.astype(np.float32, copy=False))
+        except queue.Full:
+            try:
+                _ = self.queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.queue.put_nowait(samples.astype(np.float32, copy=False))
+            except queue.Full:
+                pass
+
+    def close(self) -> None:
+        if not self.running:
+            return
+        self.running = False
+        try:
+            self.queue.put_nowait(None)
+        except queue.Full:
+            # Force space and retry
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.queue.put_nowait(None)
+            except queue.Full:
+                pass
+        self.thread.join(timeout=1.0)
+        self.guard.clear()
+
+    def _worker(self) -> None:
+        import pygame
+
+        while True:
+            try:
+                item = self.queue.get(timeout=0.5)
+            except queue.Empty:
+                if not self.running:
+                    break
+                continue
+            if item is None:
+                break
+            try:
+                play_buf = self._prepare_buffer(item)
+                if play_buf.size == 0:
+                    continue
+                mx = float(np.max(np.abs(play_buf))) if play_buf.size else 0.0
+                if mx > 0.0:
+                    play_buf = play_buf / mx
+                play_buf = np.clip(play_buf * self.gain, -1.0, 1.0)
+                if self.device_sr != self.input_sr:
+                    play_buf = resample_to_rate(play_buf, self.input_sr, self.device_sr)
+                    play_buf = np.clip(play_buf, -1.0, 1.0)
+                y16 = (play_buf * 32767.0).astype(np.int16)
+                arr = y16[:, None] if self.channels > 1 else y16
+                if self.channels > 1:
+                    arr = np.repeat(arr, self.channels, axis=1)
+                snd = pygame.sndarray.make_sound(np.ascontiguousarray(arr))
+                if self.channel.get_busy():
+                    self.channel.queue(snd)
+                else:
+                    self.channel.play(snd)
+                self.guard.append(snd)
+                if len(self.guard) > 8:
+                    self.guard.pop(0)
+            except Exception:
+                # Disable on failure
+                try:
+                    self.channel = None
+                except Exception:
+                    pass
+                break
+
+    def _prepare_buffer(self, buf: np.ndarray) -> np.ndarray:
+        data = np.asarray(buf, dtype=np.float32)
+        if data.ndim != 1:
+            data = data.reshape(-1)
+        if self.stream_step is None:
+            return data.copy()
+        if self.prime_full:
+            self.prime_full = False
+            return data.copy()
+        if self.stream_step <= 0:
+            return data.copy()
+        tail = data[-self.stream_step:]
+        return tail.copy()
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train mipmap blend weights using C FFT with PyTorch autograd")
     p.add_argument("--input", required=True, help="Path to mono WAV file to train on")
@@ -499,11 +958,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--steps-per-epoch", type=int, default=50)
     p.add_argument("--chunk", type=int, default=44100, help="Training chunk length in samples")
+    p.add_argument("--segment-batch-size", type=int, default=1, help="Number of sequential segments to accumulate before a training update")
+    p.add_argument("--segment-batch-slide", type=int, default=1, help="Number of segments to drop from the buffer after each update (1 -> slide window)")
     p.add_argument("--seed", type=int, default=1234)
+    p.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto", help="Torch device for training (auto -> cuda if available)")
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--lambda-hist", type=float, default=0.1)
     p.add_argument("--lambda-contrast", type=float, default=0.1)
     p.add_argument("--tv", type=float, default=1e-3, help="Total-variation regularization on weights")
+    p.add_argument("--stream", action="store_true", help="Process the input sequentially (streaming) instead of random chunks")
+    p.add_argument("--stream-overlap", type=float, default=0.5, help="Fraction of each chunk to overlap with the next in streaming mode")
     # Complex blend controls
     p.add_argument("--phase-blend", choices=["unit", "cartesian"], default="unit", help="Blend phase on the unit circle (default) or Cartesian sum")
     p.add_argument("--phase-mag-exp", type=float, default=1.0, help="Exponent beta for magnitude influence in phase averaging: weights multiply by (mag^beta)")
@@ -527,6 +991,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--viz-fmin", type=float, default=0.0, help="Min frequency (Hz) to display (0=DC)")
     p.add_argument("--viz-fmax", type=float, default=0.0, help="Max frequency (Hz) to display (0=Nyquist)")
     p.add_argument("--viz-time-frames", type=int, default=0, help="Limit number of time frames shown (0=all)")
+    p.add_argument("--viz-history", type=int, default=512, help="Number of canonical frames to retain in the scrolling visualization (0=keep all)")
+    p.add_argument("--viz-top-mode", default="blend", help="Initial selection for the top panel (blend, ref, nodeX)")
+    p.add_argument("--viz-bottom-mode", default="weights", help="Initial selection for the bottom panel (weights, blend, ref, nodeX)")
     # Audio monitoring
     p.add_argument("--audio", choices=["off", "blend", "residual", "ref"], default="off", help="Monitor reconstructed blend, residual (orig-blend), or reference reconstruction")
     p.add_argument("--audio-gain", type=float, default=0.9, help="Output gain applied before int16 conversion")
@@ -543,6 +1010,21 @@ def choose_reference_index(ns: Sequence[int]) -> int:
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA device requested but not available")
+    if device.type == "cuda":
+        cuda_index = device.index if device.index is not None else 0
+        torch.cuda.set_device(cuda_index)
+        torch.backends.cudnn.enabled = False
+        device = torch.device("cuda", cuda_index)
+    print(f"[device] using {device}")
 
     # Load audio (mono)
     sr, data = wavfile.read(args.input)
@@ -552,6 +1034,25 @@ def main() -> None:
     total_len = int(x_all.shape[0])
     if total_len < args.chunk:
         raise ValueError("Input WAV too short for a training chunk")
+
+    segment_batch_size = max(1, int(args.segment_batch_size))
+    segment_batch_slide = max(1, int(args.segment_batch_slide))
+    if segment_batch_slide > segment_batch_size:
+        segment_batch_slide = segment_batch_size
+
+    stream_iter: Optional[Iterator[np.ndarray]] = None
+    stream_step: Optional[int] = None
+    if args.stream:
+        overlap = float(args.stream_overlap)
+        if not 0.0 <= overlap < 1.0:
+            raise ValueError("--stream-overlap must be in [0.0, 1.0)")
+        stream_iter = chunk_stream(x_all, int(args.chunk), overlap, loop=True)
+        step = int(round(int(args.chunk) * (1.0 - overlap)))
+        if step <= 0:
+            step = 1
+        elif step > int(args.chunk):
+            step = int(args.chunk)
+        stream_step = step
 
     lib_path = _discover_library(args.lib)
     c = CffiFft(lib_path, threads=args.threads)
@@ -625,6 +1126,8 @@ def main() -> None:
     # Optional pygame viz + audio
     screen = None
     mixer_channel = None
+    scroller: Optional[SpectrogramScroller] = None
+    audio_streamer: Optional[AudioStreamer] = None
     if args.viz or args.audio != "off":
         try:
             import pygame
@@ -632,10 +1135,26 @@ def main() -> None:
             if args.viz:
                 screen = pygame.display.set_mode((args.viz_width, args.viz_height))
                 pygame.display.set_caption("Ref / Blend / Weights (low freq bottom)")
+                scroller = SpectrogramScroller(
+                    width=args.viz_width,
+                    height=args.viz_height,
+                    mode=args.viz_mode,
+                    history_frames=int(args.viz_history),
+                    node_specs=list(zip(Ns, hops)),
+                    top_initial=args.viz_top_mode,
+                    bottom_initial=args.viz_bottom_mode
+                )
             if args.audio != "off":
                 try:
                     pygame.mixer.init(frequency=int(sr), size=-16, channels=1, buffer=1024)
                     mixer_channel = pygame.mixer.Channel(0)
+                    actual = pygame.mixer.get_init()
+                    if actual and actual[0] != int(sr):
+                        print(f"[audio] warning: requested {sr} Hz, mixer using {actual[0]} Hz")
+                    if mixer_channel is not None:
+                        device_sr = actual[0] if actual else sr
+                        step_for_stream = stream_step if stream_iter is not None else None
+                        audio_streamer = AudioStreamer(mixer_channel, sr, device_sr, args.audio_gain, step_for_stream)
                 except Exception as mex:
                     print(f"[audio] mixer init failed: {mex}")
                     mixer_channel = None
@@ -643,34 +1162,51 @@ def main() -> None:
             print(f"[viz] failed to init pygame: {ex}")
             screen = None
             mixer_channel = None
+            scroller = None
 
     # Small weight network
     U = len(Ns)
-    weight_net = TinyWeightNet(U)
+    weight_net = TinyWeightNet(U).to(device)
     opt = torch.optim.Adam(weight_net.parameters(), lr=args.lr)
+
+    segment_buffer: List[dict] = []
+    train_updates = 0
+    stop_training = False
 
     # Training loop
     for epoch in range(args.epochs):
+        if stop_training:
+            break
         for step in range(args.steps_per_epoch):
-            # Random chunk
-            start = np.random.randint(0, total_len - args.chunk + 1)
-            seg = x_all[start:start + args.chunk]
-            seg_t = torch.from_numpy(seg).unsqueeze(0)  # [1, T]
+            if stop_training:
+                break
+            if stream_iter is not None:
+                try:
+                    seg = next(stream_iter)
+                except StopIteration:
+                    stream_iter = chunk_stream(x_all, int(args.chunk), float(args.stream_overlap), loop=True)
+                    seg = next(stream_iter)
+            else:
+                start = np.random.randint(0, total_len - args.chunk + 1)
+                seg = x_all[start:start + args.chunk]
+            seg_t = torch.from_numpy(seg).unsqueeze(0).to(device)  # [1, T]
 
             # Compute per-config STFTs from C (no grad path through these)
             specs: List[Tuple[torch.Tensor, torch.Tensor]] = []  # (real, imag) tensors in each node's native grid
+            specs_np: List[Tuple[np.ndarray, np.ndarray]] = []    # matching numpy arrays for transport alignment
             frames_ref = None
             bins_ref = None
             ref_raw_np = None  # (real_np, imag_np, bins, frames) from direct A_ref(x)
             for u, plan in enumerate(forward_plans):
                 r, i, m, bins, frames = c.stft(plan, seg)
-                rt = torch.from_numpy(r)  # [F, T]
-                it = torch.from_numpy(i)
+                rt = torch.from_numpy(r).to(device)  # [F, T]
+                it = torch.from_numpy(i).to(device)
                 if u == ref_idx:
                     bins_ref, frames_ref = int(bins), int(frames)
                     # Keep an untouched copy of the exact reference analysis for audio 'ref'
                     ref_raw_np = (r.copy(), i.copy(), int(bins), int(frames))
                 specs.append((rt, it))
+                specs_np.append((r.copy(), i.copy()))
 
             assert frames_ref is not None and bins_ref is not None
 
@@ -679,7 +1215,7 @@ def main() -> None:
             real_stack = []
             imag_stack = []
             mag_stack = []
-            for u, (rt, it) in enumerate(specs):
+            for u, ((rt, it), (r_np, i_np)) in enumerate(zip(specs, specs_np)):
                 if args.align == "resize":
                     # Naive resize of complex to canonical
                     if rt.shape != (F_ref, T_ref):
@@ -689,10 +1225,10 @@ def main() -> None:
                         rt2, it2 = rt, it
                 else:
                     # Transport: synthesize with node inverse, analyze with reference forward
-                    y_u = c.istft(inverse_plans[u], rt.numpy(), it.numpy())
+                    y_u = c.istft(inverse_plans[u], r_np.astype(np.float32, copy=False), i_np.astype(np.float32, copy=False))
                     r2, i2, m2, bins2, frames2 = c.stft(forward_ref, y_u)
-                    rt2 = torch.from_numpy(r2)
-                    it2 = torch.from_numpy(i2)
+                    rt2 = torch.from_numpy(r2).to(device)
+                    it2 = torch.from_numpy(i2).to(device)
                     # Align time frames by crop/pad to T_ref (bins should match F_ref)
                     if bins2 != F_ref:
                         # If mismatch, resize bins via bilinear (rare)
@@ -700,8 +1236,8 @@ def main() -> None:
                         it2 = _resize_2d(it2.unsqueeze(0).unsqueeze(0), (F_ref, frames2)).squeeze(0).squeeze(0)
                     if frames2 < T_ref:
                         pad = T_ref - frames2
-                        rt2 = torch.cat([rt2, torch.zeros(F_ref, pad, dtype=rt2.dtype)], dim=1)
-                        it2 = torch.cat([it2, torch.zeros(F_ref, pad, dtype=it2.dtype)], dim=1)
+                        rt2 = torch.cat([rt2, torch.zeros(F_ref, pad, dtype=rt2.dtype, device=rt2.device)], dim=1)
+                        it2 = torch.cat([it2, torch.zeros(F_ref, pad, dtype=it2.dtype, device=it2.device)], dim=1)
                     elif frames2 > T_ref:
                         rt2 = rt2[:, :T_ref]
                         it2 = it2[:, :T_ref]
@@ -709,29 +1245,96 @@ def main() -> None:
                 imag_stack.append(it2)
                 mag_stack.append(torch.sqrt(torch.clamp(rt2 ** 2 + it2 ** 2, min=0.0)))
 
-            real_u = torch.stack(real_stack, dim=0).unsqueeze(0)  # [1, U, F, T]
-            imag_u = torch.stack(imag_stack, dim=0).unsqueeze(0)
-            mag_u = torch.stack(mag_stack, dim=0).unsqueeze(0)
+            real_u = torch.stack(real_stack, dim=0).unsqueeze(0).contiguous()  # [1, U, F, T]
+            imag_u = torch.stack(imag_stack, dim=0).unsqueeze(0).contiguous()
+            mag_u = torch.stack(mag_stack, dim=0).unsqueeze(0).contiguous()
 
-            # Weighting
+            real_u = _nan_guard("real_u", real_u)
+            imag_u = _nan_guard("imag_u", imag_u)
+            mag_u = _nan_guard("mag_u", mag_u, clamp=1e6)
+            mag_u = torch.clamp(mag_u, min=0.0, max=1e6)
+
+            ref_real_canon = real_u[0, ref_idx].detach()
+            ref_imag_canon = imag_u[0, ref_idx].detach()
+
+            segment_buffer.append({
+                "real_u": real_u,
+                "imag_u": imag_u,
+                "mag_u": mag_u,
+                "target": seg_t.detach(),
+                "ref_real": ref_real_canon,
+                "ref_imag": ref_imag_canon,
+                "ref_raw_np": ref_raw_np,
+            })
+
+            if len(segment_buffer) < segment_batch_size:
+                continue
+
+            batch_items = segment_buffer[:segment_batch_size]
+            real_u_batch = torch.cat([item["real_u"] for item in batch_items], dim=0).contiguous()
+            imag_u_batch = torch.cat([item["imag_u"] for item in batch_items], dim=0).contiguous()
+            mag_u_batch = torch.cat([item["mag_u"] for item in batch_items], dim=0).contiguous()
+            ref_real_batch = torch.stack([item["ref_real"] for item in batch_items], dim=0).contiguous()
+            ref_imag_batch = torch.stack([item["ref_imag"] for item in batch_items], dim=0).contiguous()
+
+            real_u_batch = _nan_guard("real_u_batch", real_u_batch)
+            imag_u_batch = _nan_guard("imag_u_batch", imag_u_batch)
+            mag_u_batch = _nan_guard("mag_u_batch", mag_u_batch, clamp=1e6)
+            mag_u_batch = torch.clamp(mag_u_batch, min=0.0, max=1e6)
+            ref_raw_np_batch = [item["ref_raw_np"] for item in batch_items]
+
+            B = real_u_batch.shape[0]
+            F_ref = real_u_batch.shape[2]
+            T_ref = real_u_batch.shape[3]
+            out_len = (T_ref - 1) * ref_hop + ref_N
+
+            target_batch_list = []
+            for item in batch_items:
+                tgt = item["target"]
+                if tgt.shape[1] < out_len:
+                    pad = out_len - tgt.shape[1]
+                    tgt = F.pad(tgt, (0, pad))
+                else:
+                    tgt = tgt[:, :out_len]
+                target_batch_list.append(tgt)
+            x_target = torch.cat(target_batch_list, dim=0).contiguous()
+            x_target = _nan_guard("x_target", x_target, clamp=1e3)
+
             with torch.enable_grad():
-                mags_for_logits = log_mag(mag_u, k=1.0)
-                w = weight_net(mags_for_logits)  # [1, U, F, T]
-                # Complex blending (unit circle or Cartesian)
+                mags_for_logits = log_mag(mag_u_batch, k=1.0)
+                mags_for_logits = _nan_guard("mags_for_logits", mags_for_logits, clamp=20.0)
+                mags_for_logits = mags_for_logits - mags_for_logits.mean(dim=(2, 3), keepdim=True)
+                mags_for_logits = torch.clamp(mags_for_logits, min=-20.0, max=20.0)
+                w_raw = weight_net(mags_for_logits).contiguous()
+                if not torch.isfinite(w_raw).all():
+                    print("[nan] weights produced non-finite values; applying uniform fallback")
+                    w_clean = torch.where(torch.isfinite(w_raw), w_raw, torch.zeros_like(w_raw))
+                else:
+                    w_clean = w_raw
+                w_clean = torch.clamp(w_clean, min=1e-6)
+                norm = w_clean.sum(dim=1, keepdim=True)
+                fallback_mask = norm <= 0
+                if fallback_mask.any():
+                    w_uniform = torch.full_like(w_clean, 1.0 / w_clean.shape[1])
+                    w_clean = torch.where(fallback_mask, w_uniform, w_clean)
+                    norm = w_clean.sum(dim=1, keepdim=True)
+                w = w_clean / norm.clamp_min(1e-6)
                 if args.phase_blend == "unit":
                     eps = float(args.phase_eps)
                     beta = float(args.phase_mag_exp)
-                    M_u = torch.clamp(mag_u, min=0.0)
-                    cos_u = real_u / (M_u + eps)
-                    sin_u = imag_u / (M_u + eps)
+                    M_u = torch.clamp(mag_u_batch, min=0.0, max=1e4)
+                    cos_u = real_u_batch / (M_u + eps)
+                    sin_u = imag_u_batch / (M_u + eps)
+                    cos_u = _nan_guard("cos_u", cos_u)
+                    sin_u = _nan_guard("sin_u", sin_u)
                     w_phase = w * torch.pow(M_u + eps, beta)
-                    cos_mix = torch.sum(w_phase * cos_u, dim=1)  # [1, F, T]
+                    w_phase = _nan_guard("w_phase", w_phase)
+                    cos_mix = torch.sum(w_phase * cos_u, dim=1)
                     sin_mix = torch.sum(w_phase * sin_u, dim=1)
                     phase_hat = torch.atan2(sin_mix, cos_mix)
                     if args.mag_combine == "powermean":
                         p = float(args.mag_p)
                         if abs(p) < 1e-6:
-                            # Geometric mean approximation
                             M_hat = torch.exp(torch.sum(w * torch.log(M_u + eps), dim=1))
                         else:
                             M_hat = torch.pow(torch.sum(w * torch.pow(M_u + eps, p), dim=1) + 1e-12, 1.0 / p)
@@ -740,74 +1343,83 @@ def main() -> None:
                     real_blend = M_hat * torch.cos(phase_hat)
                     imag_blend = M_hat * torch.sin(phase_hat)
                 else:
-                    # Cartesian sum (baseline)
-                    real_blend = torch.sum(w * real_u, dim=1)  # [1, F, T]
-                    imag_blend = torch.sum(w * imag_u, dim=1)
+                    real_blend = torch.sum(w * real_u_batch, dim=1)
+                    imag_blend = torch.sum(w * imag_u_batch, dim=1)
 
-                # Inverse through C with autograd-enabled wrapper
-                wav_hat = ISTFT_CFFI_Function.apply(real_blend, imag_blend, (c, inverse_plan, forward_ref))  # [1, T_out]
+                real_blend = _nan_guard("real_blend", real_blend, clamp=1e4)
+                imag_blend = _nan_guard("imag_blend", imag_blend, clamp=1e4)
 
-                # Target must match output length. Compute actual out_len from frames/hop/N
-                out_len = (T_ref - 1) * ref_hop + ref_N
-                x_target = seg_t[:, :out_len]
+                wav_hat = ISTFT_CFFI_Function.apply(real_blend, imag_blend, (c, inverse_plan, forward_ref))
 
-                # Losses
+                wav_hat = _nan_guard("wav_hat", wav_hat, clamp=1e3)
                 l_snr = snr_loss(wav_hat, x_target)
 
-                # Spectrogram perceptual: compare log-mag maps to reference original STFT on canonical grid
-                ref_real, ref_imag = specs[ref_idx]
-                if ref_real.shape != (F_ref, T_ref):
-                    ref_real = _resize_2d(ref_real.unsqueeze(0).unsqueeze(0), (F_ref, T_ref)).squeeze(0).squeeze(0)
-                    ref_imag = _resize_2d(ref_imag.unsqueeze(0).unsqueeze(0), (F_ref, T_ref)).squeeze(0).squeeze(0)
-                ref_mag = torch.sqrt(torch.clamp(ref_real ** 2 + ref_imag ** 2, min=0.0)).unsqueeze(0)  # [1,F,T]
-                blend_mag = torch.sqrt(torch.clamp(real_blend ** 2 + imag_blend ** 2, min=0.0))      # [1,F,T]
+                ref_mag = torch.sqrt(torch.clamp(ref_real_batch ** 2 + ref_imag_batch ** 2, min=0.0))
+                blend_mag = torch.sqrt(torch.clamp(real_blend ** 2 + imag_blend ** 2, min=0.0))
+                ref_mag = _nan_guard("ref_mag", ref_mag, clamp=1e4)
+                blend_mag = _nan_guard("blend_mag", blend_mag, clamp=1e4)
 
                 ref_log = log_mag(ref_mag)
                 blend_log = log_mag(blend_mag)
+                ref_log = _nan_guard("ref_log", ref_log, clamp=50.0)
+                blend_log = _nan_guard("blend_log", blend_log, clamp=50.0)
 
-                # Histogram loss (soft KDE histograms)
                 h_ref = soft_histogram(ref_log, bins=64, minv=float(ref_log.min().item()), maxv=float(ref_log.max().item()))
                 h_blend = soft_histogram(blend_log, bins=64, minv=float(ref_log.min().item()), maxv=float(ref_log.max().item()))
+                h_ref = _nan_guard("h_ref", h_ref)
+                h_blend = _nan_guard("h_blend", h_blend)
                 l_hist = F.mse_loss(h_blend, h_ref)
 
-                # Local contrast loss
                 lc_ref = local_contrast_map(ref_log)
                 lc_blend = local_contrast_map(blend_log)
+                lc_ref = _nan_guard("lc_ref", lc_ref)
+                lc_blend = _nan_guard("lc_blend", lc_blend)
                 l_contrast = F.l1_loss(lc_blend, lc_ref)
 
-                # TV regularization on weights (encourage smoothness in TF)
                 tv_t = torch.mean(torch.abs(w[:, :, :, 1:] - w[:, :, :, :-1]))
                 tv_f = torch.mean(torch.abs(w[:, :, 1:, :] - w[:, :, :-1, :]))
                 l_tv = tv_t + tv_f
 
                 loss = l_snr + args.lambda_hist * l_hist + args.lambda_contrast * l_contrast + args.tv * l_tv
 
+            if not torch.isfinite(loss):
+                print(f"[warn] non-finite loss detected at epoch {epoch+1} step {step+1}; skipping update")
+                opt.zero_grad(set_to_none=True)
+                segment_buffer.clear()
+                continue
+
             opt.zero_grad(set_to_none=True)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(weight_net.parameters(), max_norm=5.0)
             opt.step()
+            train_updates += 1
 
-            if args.debug_check_ref and (step + 1) % 1 == 0 and ref_raw_np is not None:
-                # Sanity-check reference round-trip SNR
-                r_np, i_np, b_np, f_np = ref_raw_np
-                y_ref = c.istft(inverse_plan, r_np.astype(np.float32), i_np.astype(np.float32))
-                x_np = x_target.detach().cpu().squeeze(0).numpy()
-                L = min(len(y_ref), len(x_np))
-                if L > 0:
-                    err = np.mean((y_ref[:L] - x_np[:L]) ** 2)
-                    sig = np.mean(x_np[:L] ** 2) + 1e-12
-                    snr_ref = 10.0 * np.log10(sig / (err + 1e-12))
-                    print(f"[debug] ref round-trip SNR: {snr_ref:.2f} dB (bins={b_np}, frames={f_np}, out_len={L})")
+            wav_hat_np = wav_hat.detach().cpu().numpy()
+            x_target_np = x_target.detach().cpu().numpy()
 
-            if (step + 1) % 10 == 0:
-                print(f"epoch {epoch+1} step {step+1}: loss={loss.item():.6f} snr={l_snr.item():.6f} hist={l_hist.item():.6f} contrast={l_contrast.item():.6f} tv={l_tv.item():.6f}")
+            if args.debug_check_ref:
+                for idx, ref_entry in enumerate(ref_raw_np_batch):
+                    if ref_entry is None:
+                        continue
+                    r_np, i_np, b_np, f_np = ref_entry
+                    y_ref = c.istft(inverse_plan, r_np.astype(np.float32), i_np.astype(np.float32))
+                    x_np = x_target_np[idx]
+                    L = min(len(y_ref), len(x_np))
+                    if L > 0:
+                        err = np.mean((y_ref[:L] - x_np[:L]) ** 2)
+                        sig = np.mean(x_np[:L] ** 2) + 1e-12
+                        snr_ref = 10.0 * np.log10(sig / (err + 1e-12))
+                        print(f"[debug] update {train_updates} seg {idx}: ref round-trip SNR {snr_ref:.2f} dB (bins={b_np}, frames={f_np}, out_len={L})")
 
-            # Update pygame window with interim spectrogram image (3 panels: ref / blend / weights)
-            if screen is not None:
+            if train_updates % 10 == 0:
+                print(f"epoch {epoch+1} step {step+1} update {train_updates}: loss={loss.item():.6f} snr={l_snr.item():.6f} hist={l_hist.item():.6f} contrast={l_contrast.item():.6f} tv={l_tv.item():.6f} batch={B}")
+
+            if screen is not None and scroller is not None:
                 try:
                     import pygame
-                    # Select frequency crop and time window on canonical grid
-                    F_ref = ref_log.shape[1]
-                    T_ref = ref_log.shape[2]
+
+                    F_total = ref_log.shape[1]
+                    T_total = ref_log.shape[2]
                     fmin_hz = float(args.viz_fmin)
                     fmax_hz = float(args.viz_fmax)
                     nyq = sr * 0.5
@@ -817,129 +1429,50 @@ def main() -> None:
                         fmin_hz = 0.0
                     kmin = int(round(fmin_hz * ref_N / sr))
                     kmax = int(round(fmax_hz * ref_N / sr))
-                    kmin = max(0, min(F_ref - 1, kmin))
-                    kmax = max(kmin + 1, min(F_ref, kmax))
-                    # Time window
+                    kmin = max(0, min(F_total - 1, kmin))
+                    kmax = max(kmin + 1, min(F_total, kmax))
                     tf = int(args.viz_time_frames)
-                    t0 = max(0, T_ref - tf) if tf > 0 else 0
-                    t1 = T_ref
+                    t0 = max(0, T_total - tf) if tf > 0 else 0
+                    t1 = T_total
 
-                    def to_u8_gray(ft: torch.Tensor) -> np.ndarray:
-                        # ft: [F,T] torch -> uint8 HxW with 0..255, low freq at bottom
-                        v = ft.detach().cpu()
-                        v = v - v.min()
-                        denom = float(v.max().item()) if v.numel() > 0 else 0.0
-                        if denom <= 1e-12:
-                            v = torch.zeros_like(v)
-                        else:
-                            v = (v / denom) * 255.0
-                        img = v.numpy().astype(np.uint8)
-                        img = np.flipud(img)  # low freq at bottom
-                        return img  # [H=F, W=T]
+                    last_idx = B - 1
+                    ref_log_det = ref_log.detach()
+                    blend_log_det = blend_log.detach()
+                    weights_det = w.detach()
+                    real_det = real_u_batch.detach()
+                    imag_det = imag_u_batch.detach()
 
-                    def to_u8_rgb(real_ft: torch.Tensor, imag_ft: torch.Tensor) -> np.ndarray:
-                        # real_ft/imag_ft: [F,T]; map real/imag linearly per-channel; B=mag
-                        def _norm01(x: torch.Tensor) -> torch.Tensor:
-                            xx = x.detach().cpu()
-                            mn = xx.min()
-                            rng = xx.max() - mn
-                            return torch.zeros_like(xx) if float(rng.item()) <= 1e-12 else (xx - mn) / (rng + 1e-12)
-                        R = _norm01(real_ft)
-                        I = _norm01(imag_ft)
-                        M = torch.sqrt(torch.clamp(real_ft**2 + imag_ft**2, min=0.0))
-                        # log1p for magnitude then normalize
-                        M = torch.log1p(M)
-                        M = _norm01(M)
-                        r = (R.numpy() * 255.0).astype(np.uint8)
-                        g = (I.numpy() * 255.0).astype(np.uint8)
-                        b = (M.numpy() * 255.0).astype(np.uint8)
-                        # Flip vertically (low freq bottom)
-                        r = np.flipud(r)
-                        g = np.flipud(g)
-                        b = np.flipud(b)
-                        rgb = np.stack([r.T, g.T, b.T], axis=2)  # (W,H,3)
-                        return rgb
+                    ref_log_crop = ref_log_det[last_idx][kmin:kmax, t0:t1]
+                    blend_log_crop = blend_log_det[last_idx][kmin:kmax, t0:t1]
 
-                    # Prepare three panels (apply crop)
-                    if args.viz_mode == "rgb":
-                        # ref: use ref_real/imag; blend: use real_blend/imag_blend
-                        ref_r = ref_real[kmin:kmax, t0:t1]
-                        ref_i = ref_imag[kmin:kmax, t0:t1]
-                        blend_r = real_blend.squeeze(0)[kmin:kmax, t0:t1]
-                        blend_i = imag_blend.squeeze(0)[kmin:kmax, t0:t1]
-                        ref_rgb = to_u8_rgb(ref_r, ref_i)
-                        blend_rgb = to_u8_rgb(blend_r, blend_i)
-                    else:
-                        ref_c = ref_log[:, kmin:kmax, t0:t1].squeeze(0)
-                        blend_c = blend_log[:, kmin:kmax, t0:t1].squeeze(0)
-                        ref_gray = to_u8_gray(ref_c)    # [H,W]
-                        blend_gray = to_u8_gray(blend_c)
-                    # Weights heatmap: average over frequency -> [U,T]
-                    w_cpu = w.detach().cpu().squeeze(0)        # [U,F,T]
-                    w_crop = w_cpu[:, kmin:kmax, t0:t1]
-                    w_mean = w_crop.mean(dim=1)                 # [U,T]
-                    # Normalize across all nodes/time for a common color scale
-                    wv = w_mean - w_mean.min()
-                    wd = float(wv.max().item()) if wv.numel() > 0 else 0.0
-                    if wd <= 1e-12:
-                        w_u8 = (wv * 0).numpy().astype(np.uint8)
-                    else:
-                        w_u8 = (wv / wd * 255.0).numpy().astype(np.uint8)
-                    # Expand each node row to a small height block
-                    U = w_u8.shape[0]
-                    per_row = max(1, args.viz_height // 12)  # heuristic row height
-                    rows = [np.tile(w_u8[u:u+1, :], (per_row, 1)) for u in range(U)]
-                    weights_vis = np.vstack(rows)  # [U*per_row, T]
-                    # Convert each panel to RGB surface scaled to thirds
-                    def make_surface(img: np.ndarray, width: int, height: int) -> pygame.Surface:
-                        # Accept either [H,W] uint8 or [W,H,3] uint8
-                        if img.ndim == 2:
-                            g = np.ascontiguousarray(img)
-                            rgb = np.stack([g.T, g.T, g.T], axis=2)
-                            rgb = np.ascontiguousarray(rgb)
-                            surf = pygame.surfarray.make_surface(rgb)
-                        else:
-                            surf = pygame.surfarray.make_surface(np.ascontiguousarray(img))
-                        return pygame.transform.smoothscale(surf, (width, height))
+                    node_real = real_det[last_idx]
+                    node_imag = imag_det[last_idx]
+                    node_mag = torch.sqrt(torch.clamp(node_real ** 2 + node_imag ** 2, min=0.0))
+                    node_log = torch.log1p(node_mag)
+                    node_logs = [node_log[u][kmin:kmax, t0:t1] for u in range(node_log.shape[0])]
 
-                    W = args.viz_width
-                    H = args.viz_height
-                    h_third = H // 3
-                    if args.viz_mode == "rgb":
-                        ref_s = make_surface(ref_rgb, W, h_third)
-                        blend_s = make_surface(blend_rgb, W, h_third)
-                    else:
-                        ref_s = make_surface(ref_gray, W, h_third)
-                        blend_s = make_surface(blend_gray, W, h_third)
-                    w_s = make_surface(weights_vis, W, H - 2 * h_third)
-                    screen.blit(ref_s, (0, 0))
-                    screen.blit(blend_s, (0, h_third))
-                    screen.blit(w_s, (0, 2 * h_third))
+                    weights_slice = weights_det[last_idx][:, kmin:kmax, t0:t1]
 
-                    # Overlay labels and per-node specs on bottom panel
-                    try:
-                        font = pygame.font.SysFont(None, 16)
-                        label = font.render("Ref / Blend / Weights ({} mode)".format(args.viz_mode.upper()), True, (255, 255, 0))
-                        screen.blit(label, (6, 6))
-                        # Specs for each node along the left of bottom panel
-                        y0 = 2 * h_third
-                        row_h = (H - 2 * h_third) / max(1, w_u8.shape[0])
-                        for idx, (n, hhop) in enumerate(zip(Ns, hops)):
-                            y = int(y0 + idx * row_h + 1)
-                            txt = font.render(f"N={n} H={hhop}", True, (200, 200, 200))
-                            screen.blit(txt, (6, y))
-                    except Exception:
-                        pass
-
+                    scroller.update(ref_log_crop, blend_log_crop, node_logs, weights_slice)
+                    scroller.render(screen)
                     pygame.display.flip()
-                    # Basic event pump to keep window responsive
+
                     for event in pygame.event.get():
-                        if event.type == pygame.QUIT:
-                            screen = None
+                        if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                            stop_training = True
                             pygame.quit()
+                            screen = None
+                            scroller = None
+                            mixer_channel = None
+                            if audio_streamer is not None:
+                                audio_streamer.close()
+                                audio_streamer = None
                             break
+                        elif event.type == pygame.KEYDOWN and scroller is not None:
+                            scroller.handle_key(event.key)
+                    if stop_training:
+                        break
                 except Exception as _viz_ex:
-                    # Disable viz on first failure
                     print(f"[viz] disabled due to error: {_viz_ex}")
                     try:
                         import pygame
@@ -947,59 +1480,51 @@ def main() -> None:
                     except Exception:
                         pass
                     screen = None
+                    scroller = None
+                    mixer_channel = None
+                    if audio_streamer is not None:
+                        audio_streamer.close()
+                        audio_streamer = None
 
-            # Optional audio monitoring
-            if mixer_channel is not None and args.audio != "off":
+            if audio_streamer is not None and mixer_channel is not None and args.audio != "off":
                 try:
                     import pygame
-                    # Extract numpy arrays
-                    y = wav_hat.detach().cpu().squeeze(0).numpy()  # blend reconstruction
-                    x = x_target.detach().cpu().squeeze(0).numpy()  # reference-length target
-                    if args.audio == "residual":
-                        y = x - y
-                    elif args.audio == "ref":
-                        # Reconstruct reference from the exact forward output of A_ref(x)
-                        if ref_raw_np is None:
-                            # Fallback: use current tensors if not captured (should not happen)
-                            ref_r_np = ref_real.detach().cpu().numpy().astype(np.float32)
-                            ref_i_np = ref_imag.detach().cpu().numpy().astype(np.float32)
-                            y_ref = c.istft(inverse_plan, ref_r_np, ref_i_np)
-                        else:
-                            r_np, i_np, b_np, f_np = ref_raw_np
-                            # Sanity: bins should match inverse plan bins
-                            plan_bins = inverse_plan.n // 2 + 1 if inverse_plan.half else inverse_plan.n
-                            if b_np != plan_bins:
-                                # Resize safely if mismatch (defensive; should not occur)
-                                r_t = torch.from_numpy(r_np)
-                                i_t = torch.from_numpy(i_np)
-                                r_t = _resize_2d(r_t.unsqueeze(0).unsqueeze(0), (plan_bins, f_np)).squeeze(0).squeeze(0)
-                                i_t = _resize_2d(i_t.unsqueeze(0).unsqueeze(0), (plan_bins, f_np)).squeeze(0).squeeze(0)
-                                r_np = r_t.numpy().astype(np.float32)
-                                i_np = i_t.numpy().astype(np.float32)
-                            y_ref = c.istft(inverse_plan, r_np.astype(np.float32), i_np.astype(np.float32))
-                        # Match target length
-                        if y_ref.shape[0] >= x.shape[0]:
-                            y = y_ref[: x.shape[0]]
-                        else:
-                            pad = x.shape[0] - y_ref.shape[0]
-                            y = np.pad(y_ref, (0, pad), mode="constant")
-                    # Normalize to int16
-                    mx = np.max(np.abs(y)) if y.size else 0.0
-                    if mx > 0:
-                        y = y / mx
-                    y = np.clip(y * float(args.audio_gain), -1.0, 1.0)
-                    y16 = (y * 32767.0).astype(np.int16)
-                    init = pygame.mixer.get_init()
-                    ch = int(init[2]) if init else 1
-                    arr = y16.copy()
-                    if ch > 1:
-                        # Expand mono -> stereo/ multichannel by duplication
-                        arr = np.repeat(arr[:, None], ch, axis=1)
-                    snd = pygame.sndarray.make_sound(arr)
-                    mixer_channel.play(snd)
+                    for idx in range(B):
+                        y = wav_hat_np[idx]
+                        x = x_target_np[idx]
+                        if args.audio == "residual":
+                            y = x - y
+                        elif args.audio == "ref":
+                            ref_entry = ref_raw_np_batch[idx]
+                            if ref_entry is None:
+                                ref_r_np = ref_real_batch[idx].detach().cpu().numpy().astype(np.float32)
+                                ref_i_np = ref_imag_batch[idx].detach().cpu().numpy().astype(np.float32)
+                                y_ref = c.istft(inverse_plan, ref_r_np, ref_i_np)
+                            else:
+                                r_np, i_np, b_np, f_np = ref_entry
+                                plan_bins = inverse_plan.n // 2 + 1 if inverse_plan.half else inverse_plan.n
+                                if b_np != plan_bins:
+                                    r_t = torch.from_numpy(r_np)
+                                    i_t = torch.from_numpy(i_np)
+                                    r_t = _resize_2d(r_t.unsqueeze(0).unsqueeze(0), (plan_bins, f_np)).squeeze(0).squeeze(0)
+                                    i_t = _resize_2d(i_t.unsqueeze(0).unsqueeze(0), (plan_bins, f_np)).squeeze(0).squeeze(0)
+                                    r_np = r_t.numpy().astype(np.float32)
+                                    i_np = i_t.numpy().astype(np.float32)
+                                y_ref = c.istft(inverse_plan, r_np.astype(np.float32), i_np.astype(np.float32))
+                            if y_ref.shape[0] >= x.shape[0]:
+                                y = y_ref[: x.shape[0]]
+                            else:
+                                pad = x.shape[0] - y_ref.shape[0]
+                                y = np.pad(y_ref, (0, pad), mode="constant")
+                        audio_streamer.push(y)
                 except Exception as _aud_ex:
                     print(f"[audio] disabled due to error: {_aud_ex}")
+                    if audio_streamer is not None:
+                        audio_streamer.close()
+                        audio_streamer = None
                     mixer_channel = None
+
+            del segment_buffer[:segment_batch_slide]
 
     # Save trained weights
     torch.save({
@@ -1013,6 +1538,8 @@ def main() -> None:
     print(f"Saved model to {args.save}")
 
     # Free contexts
+    if audio_streamer is not None:
+        audio_streamer.close()
     c.free_all()
 
 
