@@ -8,6 +8,9 @@
         "limits": "cpp",
         "chrono": "cpp",
         "xutility": "cpp",
-        "type_traits": "cpp"
+        "type_traits": "cpp",
+        "cmath": "cpp",
+        "complex": "cpp",
+        "cstdlib": "cpp"
     }
 }

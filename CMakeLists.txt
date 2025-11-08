@@ -252,12 +252,13 @@ function(fftfree_apply_target_options target)
 endfunction()
 
 
-add_library(fft_cffi SHARED fft_cffi.cpp eigen_fft.hpp plan_support.hpp phase_infer.hpp butterfly/butterfly_base.hpp butterfly/butterfly_factory.hpp butterfly/butterfly_radix2_dit.hpp butterfly/butterfly_radix2_dif.hpp butterfly/butterfly_radix4_dit.hpp)
+add_library(fft_cffi SHARED fft_cffi.cpp ft_tools_cffi.cpp ft_tools_cffi.hpp ft_tools.hpp eigen_fft.hpp plan_support.hpp phase_infer.hpp butterfly/butterfly_base.hpp butterfly/butterfly_factory.hpp butterfly/butterfly_radix2_dit.hpp butterfly/butterfly_radix2_dif.hpp butterfly/butterfly_radix4_dit.hpp)
 fftfree_apply_target_options(fft_cffi)
 target_compile_definitions(fft_cffi PRIVATE FFT_CFFI_EXPORTS)
 
 add_executable(fft_example main.cpp)
 fftfree_apply_target_options(fft_example)
+target_link_libraries(fft_example PRIVATE fft_cffi)
 
 add_executable(fft_tests tests/fftfree_tests.cpp)
 fftfree_apply_target_options(fft_tests)

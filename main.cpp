@@ -1,11 +1,13 @@
 #include "eigen_fft.hpp"
 #include "plan_support.hpp"
 #include "crash_handler.hpp"
+#include "fft_cffi.hpp"
 #include <memory>
 
 #include <Eigen/Core>
 
 #include <chrono>
+#include <atomic>
 #include <complex>
 #include <cctype>
 #include <iomanip>
@@ -19,8 +21,194 @@
 #include <thread>
 #include <vector>
 #include <utility>
+#include <stdexcept>
 
 namespace {
+
+std::atomic<size_t> g_cffi_restore_chunks{0};
+
+extern "C" void fft_example_restore_observer(std::size_t start, std::size_t end) {
+  if (end > start) {
+    g_cffi_restore_chunks.fetch_add(end - start, std::memory_order_relaxed);
+  }
+}
+
+void run_cffi_recovery_demo(int thread_hint) {
+  const int N = 1024;
+  const int hop = N / 2;
+  const int expected_frames = 6;
+  const int threads = std::max(2, thread_hint);
+  const int bins = N / 2 + 1;
+  const std::size_t pcm_len = static_cast<std::size_t>(N + (expected_frames - 1) * hop);
+
+  std::vector<float> pcm(pcm_len);
+  constexpr float kPi = static_cast<float>(3.14159265358979323846);
+  for (std::size_t i = 0; i < pcm.size(); ++i) {
+    const float t = static_cast<float>(i) / static_cast<float>(pcm.size());
+    pcm[i] = 0.6f * std::sin(2.0f * kPi * 220.0f * t) +
+             0.25f * std::sin(2.0f * kPi * 440.0f * t);
+  }
+
+  struct DropoutGuard {
+    DropoutGuard() {
+      fft_clear_workerpool_dropout_history();
+      fft_set_workerpool_debug_dropout(0);
+      fft_set_workerpool_dropout_pattern(2, 1, 0);
+      fft_set_workerpool_dropout_single(-1);
+      fft_set_workerpool_dropout_persistent(0);
+    }
+    ~DropoutGuard() {
+      fft_set_workerpool_debug_dropout(0);
+      fft_set_workerpool_dropout_pattern(0, 0, 0);
+      fft_set_workerpool_dropout_single(-1);
+      fft_set_workerpool_dropout_persistent(0);
+      fft_clear_workerpool_dropout_history();
+    }
+  } dropout_guard;
+
+  void* forward = fft_init_full(
+      static_cast<std::size_t>(N),
+      threads,
+      1,
+      0,
+      FFT_KERNEL_COOLEYTUKEY,
+      0,
+      nullptr,
+      0,
+      1,
+      N,
+      hop,
+      1,
+      FFT_TRANSFORM_R2C,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      1);
+  if (!forward) {
+    throw std::runtime_error("fft_example: fft_init_full (forward) failed");
+  }
+
+  const std::size_t ctx_workers = fft_ctx_worker_threads(forward);
+  const std::size_t ctx_effective = fft_ctx_effective_threads(forward);
+  std::cout << "[cffi-demo] forward ctx workers=" << ctx_workers
+            << " effective_threads=" << ctx_effective << std::endl;
+
+  std::vector<float> real(expected_frames * bins, 0.0f);
+  std::vector<float> imag(expected_frames * bins, 0.0f);
+  std::vector<float> mag(expected_frames * bins, 0.0f);
+
+  g_cffi_restore_chunks.store(0, std::memory_order_relaxed);
+  fft_register_restore_observer(&fft_example_restore_observer);
+  const size_t produced = fft_execute_batched(
+      forward,
+      pcm.data(),
+      pcm.size(),
+      real.data(),
+      imag.data(),
+      mag.data(),
+      1,
+      1,
+      expected_frames);
+  fft_register_restore_observer(nullptr);
+  if (produced == 0) {
+    fft_free(forward);
+    throw std::runtime_error("fft_example: fft_execute_batched failed");
+  }
+  const int frames = static_cast<int>(produced);
+  const int total_bins = frames * bins;
+  real.resize(total_bins);
+  imag.resize(total_bins);
+  mag.resize(total_bins);
+
+  if (g_cffi_restore_chunks.load(std::memory_order_relaxed) == 0) {
+    std::cout << "[cffi-demo] warning: restore observer recorded no recoveries; "
+                 "adjust dropout pattern if diagnostics required." << std::endl;
+  }
+
+  void* inverse = fft_init_full(
+      static_cast<std::size_t>(N),
+      threads,
+      1,
+      1,
+      FFT_KERNEL_COOLEYTUKEY,
+      0,
+      nullptr,
+      0,
+      1,
+      N,
+      hop,
+      1,
+      FFT_TRANSFORM_C2R,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      1);
+  if (!inverse) {
+    fft_free(forward);
+    throw std::runtime_error("fft_example: fft_init_full (inverse) failed");
+  }
+
+  std::vector<float> frames_pcm(static_cast<std::size_t>(frames) * static_cast<std::size_t>(N), 0.0f);
+  const size_t recovered = fft_execute_complex_batched(
+      inverse,
+      real.data(),
+      imag.data(),
+      produced,
+      frames_pcm.data(),
+      1,
+      1,
+      produced);
+  if (recovered == 0) {
+    fft_free(forward);
+    fft_free(inverse);
+    throw std::runtime_error("fft_example: fft_execute_complex_batched failed");
+  }
+
+  const std::size_t recon_len = static_cast<std::size_t>((frames - 1) * hop + N);
+  std::vector<float> recon(recon_len, 0.0f);
+  std::vector<float> counts(recon_len, 0.0f);
+  for (int f = 0; f < frames; ++f) {
+    const std::size_t start = static_cast<std::size_t>(f * hop);
+    const float* frame_pcm = frames_pcm.data() + static_cast<std::size_t>(f) * static_cast<std::size_t>(N);
+    for (int i = 0; i < N; ++i) {
+      recon[start + static_cast<std::size_t>(i)] += frame_pcm[i];
+      counts[start + static_cast<std::size_t>(i)] += 1.0f;
+    }
+  }
+  for (std::size_t i = 0; i < recon.size(); ++i) {
+    if (counts[i] > 0.0f) {
+      recon[i] /= counts[i];
+    }
+  }
+
+  double max_err = 0.0;
+  double max_abs = 0.0;
+  const std::size_t compare = std::min<std::size_t>(recon.size(), pcm.size());
+  for (std::size_t i = 0; i < compare; ++i) {
+    const double a = static_cast<double>(pcm[i]);
+    const double b = static_cast<double>(recon[i]);
+    max_err = std::max(max_err, std::abs(a - b));
+    max_abs = std::max(max_abs, std::abs(a));
+  }
+  const double rel_err = max_err / (max_abs + 1e-12);
+
+  std::cout << "[cffi-demo] frames=" << frames
+            << " bins/frame=" << bins
+            << " restores=" << g_cffi_restore_chunks.load(std::memory_order_relaxed)
+            << " rel_err=" << rel_err
+            << std::endl;
+
+  fft_free(forward);
+  fft_free(inverse);
+}
 
 // Local dispatcher that forwards to an eigfft::WorkerPool when available.
 struct PoolDispatcherLocal : public eigfft::JobDispatcher {
@@ -533,6 +721,7 @@ int main(int argc, char** argv) {
   std::vector<AlgorithmSpec> selected_algorithms;  // default set below
   RealtimeOptions realtime_opts;
   eigfft::PlanRuntimeConfig runtime_cfg;
+  bool run_cffi_demo = true;
     for (int i = 1; i < argc; ++i) {
       std::string arg = argv[i];
       const std::string prefix = "--precision=";
@@ -557,6 +746,8 @@ int main(int argc, char** argv) {
           return 1;
         }
         runtime_cfg.lanes = value;
+      } else if (arg == "--no-cffi-demo") {
+        run_cffi_demo = false;
       } else if (arg == "--realtime" || arg == "--rt") {
         realtime_opts.enabled = true;
       } else if (arg.rfind("--algorithms=", 0) == 0) {
@@ -611,6 +802,7 @@ int main(int argc, char** argv) {
          "  --threads=N                      Max worker threads (default 4, max 16)\n"
          "  --lanes=M                        Stockham lane capacity (default 2)\n"
          "  --algorithms=list                Comma-separated list: ct, stockham (default: ct only)\n"
+                     "  --no-cffi-demo                  Skip the fft_cffi interface smoke test\n"
                      "\nReal-time probe options (auto-enable realtime mode):\n"
                      "  --realtime | --rt                 Enable real-time simulation\n"
                      "  --rt-sample-rate=<Hz>             Input sample rate (default 48000, max 1e6)\n"
@@ -665,6 +857,14 @@ int main(int argc, char** argv) {
     }
     if (requested.count("f32")) {
       run_suite_for_precision<float>(seed_rng, realtime_opts, runtime_cfg, selected_algorithms, (local_dispatcher.pool ? &local_dispatcher : nullptr));
+    }
+
+    if (run_cffi_demo) {
+      try {
+        run_cffi_recovery_demo((runtime_cfg.threads > 0) ? runtime_cfg.threads : 1);
+      } catch (const std::exception& demo_err) {
+        std::cerr << "[cffi-demo] " << demo_err.what() << std::endl;
+      }
     }
 
     return 0;

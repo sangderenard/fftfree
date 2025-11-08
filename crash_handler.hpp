@@ -192,19 +192,26 @@ inline void write_text_backtrace(EXCEPTION_POINTERS* /*exinfo*/) {
     }
 }
 
-LONG WINAPI vectored_exception_handler(EXCEPTION_POINTERS* exinfo) {
-    // Ignore benign debugger-related exceptions (e.g., OutputDebugString).
-    // DBG_PRINTEXCEPTION_C (0x40010006) and its wide variant signal debug
-    // output to an attached debugger and should not generate crash reports.
+inline LONG WINAPI vectored_exception_handler(EXCEPTION_POINTERS* exinfo) {
     DWORD code = exinfo && exinfo->ExceptionRecord ? exinfo->ExceptionRecord->ExceptionCode : 0;
     if (code == 0x40010006 /* DBG_PRINTEXCEPTION_C */ ||
         code == 0x4001000A /* DBG_PRINTEXCEPTION_WIDE_C (undoc) */ ||
-        code == 0x80000003 /* EXCEPTION_BREAKPOINT */) {
+        code == 0x80000003 /* EXCEPTION_BREAKPOINT */ ||
+        code == 0x406D1388 /* SetThreadName */) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    // Try to produce an immediate, human-readable trace on stderr.
+
+    static thread_local bool in_handler = false;
+    if (in_handler) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    struct HandlerScope {
+        bool& flag;
+        explicit HandlerScope(bool& f) : flag(f) { flag = true; }
+        ~HandlerScope() { flag = false; }
+    } scope(in_handler);
+
     write_text_backtrace(exinfo);
-    // Also write a minidump for post-mortem analysis
     write_minidump(exinfo);
     return EXCEPTION_CONTINUE_SEARCH;
 }
