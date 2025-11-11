@@ -1,6 +1,7 @@
 // fft_cffi.cpp
 
 #include "fft_cffi.hpp"
+#include <cstddef>
 #include "eigen_fft.hpp"
 #include "plan_support.hpp"
 #include "recovery_ops.hpp"
@@ -69,6 +70,14 @@ struct FftContext {
     std::vector<float> synthesis_win;  // length = window
     bool windows_enabled = false;      // Whether to apply windows internally (default off)
     int apply_ola = 0;                 // Whether to perform OLA internally in inverse
+    // Streaming state (stft_mode==2)
+    bool streaming_enabled = false;
+    std::vector<float> streaming_buffer;
+    size_t streaming_offset = 0;
+    std::vector<float> streaming_inverse_queue;
+    size_t streaming_inverse_offset = 0;
+    std::vector<float> streaming_inverse_accum;
+    std::vector<float> streaming_inverse_norm;
     // Persistent worker pool (outer parallelism only). Use the canonical
     // WorkerPool implementation from `eigen_fft.hpp` to avoid duplication.
     std::unique_ptr<eigfft::WorkerPool> pool;
@@ -536,6 +545,9 @@ void* fft_init_ex(size_t n, int threads, int lanes, int inverse, int kernel, int
         ctx->window = window;
         ctx->hop = hop;
         ctx->stft_mode = stft_mode;
+        ctx->streaming_enabled = (stft_mode == 2);
+        ctx->streaming_buffer.clear();
+        ctx->streaming_offset = 0;
         // copy supplied radix pattern (if any)
         if (radix_pattern && radix_pattern_len > 0) {
             ctx->radix_pattern.assign(radix_pattern, radix_pattern + radix_pattern_len);
@@ -1323,6 +1335,435 @@ size_t fft_execute_complex_batched(void* handle,
     }
 }
 
+namespace {
+
+inline int stream_window(const FftContext* ctx) {
+    int W = ctx->window;
+    if (W <= 0) {
+        W = ctx->N;
+    }
+    return W;
+}
+
+inline int stream_hop(const FftContext* ctx) {
+    int H = ctx->hop;
+    if (H <= 0) {
+        H = stream_window(ctx);
+    }
+    return H;
+}
+
+inline size_t stream_backlog(const FftContext* ctx) {
+    if (!ctx->streaming_enabled) {
+        return 0;
+    }
+    if (ctx->streaming_offset >= ctx->streaming_buffer.size()) {
+        return 0;
+    }
+    return ctx->streaming_buffer.size() - ctx->streaming_offset;
+}
+
+inline size_t stream_available_frames(const FftContext* ctx) {
+    size_t backlog = stream_backlog(ctx);
+    const int W = stream_window(ctx);
+    const int H = stream_hop(ctx);
+    if (backlog < static_cast<size_t>(W) || W <= 0 || H <= 0) {
+        return 0;
+    }
+    return 1 + (backlog - static_cast<size_t>(W)) / static_cast<size_t>(H);
+}
+
+inline size_t stream_bins(const FftContext* ctx) {
+    const size_t plan_n = static_cast<size_t>(std::max(ctx->N, 1));
+    if (ctx->cfg.half_spectrum) {
+        return (plan_n / 2) + 1;
+    }
+    return plan_n;
+}
+
+inline void stream_compact(FftContext* ctx) {
+    if (ctx->streaming_offset == 0) {
+        return;
+    }
+    if (ctx->streaming_offset >= ctx->streaming_buffer.size()) {
+        ctx->streaming_buffer.clear();
+        ctx->streaming_offset = 0;
+        return;
+    }
+    ctx->streaming_buffer.erase(
+        ctx->streaming_buffer.begin(),
+        ctx->streaming_buffer.begin() + static_cast<std::ptrdiff_t>(ctx->streaming_offset));
+    ctx->streaming_offset = 0;
+}
+
+inline size_t stream_inverse_pending(const FftContext* ctx) {
+    if (ctx->streaming_inverse_queue.empty()) {
+        return 0;
+    }
+    if (ctx->streaming_inverse_offset >= ctx->streaming_inverse_queue.size()) {
+        return 0;
+    }
+    return ctx->streaming_inverse_queue.size() - ctx->streaming_inverse_offset;
+}
+
+inline void stream_inverse_compact(FftContext* ctx) {
+    if (ctx->streaming_inverse_offset == 0) {
+        return;
+    }
+    if (ctx->streaming_inverse_offset >= ctx->streaming_inverse_queue.size()) {
+        ctx->streaming_inverse_queue.clear();
+        ctx->streaming_inverse_offset = 0;
+        return;
+    }
+    ctx->streaming_inverse_queue.erase(
+        ctx->streaming_inverse_queue.begin(),
+        ctx->streaming_inverse_queue.begin() + static_cast<std::ptrdiff_t>(ctx->streaming_inverse_offset));
+    ctx->streaming_inverse_offset = 0;
+}
+
+inline size_t stream_inverse_emit(FftContext* ctx, float* out_pcm, size_t max_samples) {
+    if (!ctx) {
+        return 0;
+    }
+    size_t pending = stream_inverse_pending(ctx);
+    if (pending == 0) {
+        return 0;
+    }
+    size_t take = pending;
+    if (max_samples != 0 && take > max_samples) {
+        take = max_samples;
+    }
+    if (out_pcm == nullptr || take == 0) {
+        return 0;
+    }
+    std::copy_n(
+        ctx->streaming_inverse_queue.data() + ctx->streaming_inverse_offset,
+        take,
+        out_pcm);
+    ctx->streaming_inverse_offset += take;
+    stream_inverse_compact(ctx);
+    return take;
+}
+
+inline void stream_inverse_queue_sample(FftContext* ctx, float value) {
+    if (!ctx) {
+        return;
+    }
+    ctx->streaming_inverse_queue.push_back(value);
+}
+
+}  // namespace
+
+size_t fft_stft_execute(void* handle,
+                        const float* pcm,
+                        size_t pcm_len,
+                        float* out_real,
+                        float* out_imag,
+                        float* out_mag,
+                        size_t max_frames) {
+    return fft_execute_batched(handle, pcm, pcm_len, out_real, out_imag, out_mag, 1, 0, max_frames);
+}
+
+void fft_stream_reset(void* handle) {
+    if (!handle) {
+        return;
+    }
+    FftContext* ctx = static_cast<FftContext*>(handle);
+    ctx->streaming_buffer.clear();
+    ctx->streaming_offset = 0;
+    ctx->streaming_inverse_queue.clear();
+    ctx->streaming_inverse_offset = 0;
+    ctx->streaming_inverse_accum.clear();
+    ctx->streaming_inverse_norm.clear();
+}
+
+size_t fft_stream_pending_frames(void* handle) {
+    if (!handle) {
+        return 0;
+    }
+    FftContext* ctx = static_cast<FftContext*>(handle);
+    return stream_available_frames(ctx);
+}
+
+size_t fft_stream_backlog_samples(void* handle) {
+    if (!handle) {
+        return 0;
+    }
+    FftContext* ctx = static_cast<FftContext*>(handle);
+    return stream_backlog(ctx);
+}
+
+size_t fft_stream_pending_pcm(void* handle) {
+    if (!handle) {
+        return 0;
+    }
+    FftContext* ctx = static_cast<FftContext*>(handle);
+    if (!ctx->streaming_enabled || !ctx->inverse) {
+        return 0;
+    }
+    return stream_inverse_pending(ctx);
+}
+
+size_t fft_stream_push_pcm(void* handle,
+                           const float* pcm,
+                           size_t samples,
+                           float* out_real,
+                           float* out_imag,
+                           float* out_mag,
+                           size_t max_frames,
+                           int flush_mode) {
+    if (!handle) {
+        return 0;
+    }
+    FftContext* ctx = static_cast<FftContext*>(handle);
+    if (!ctx->streaming_enabled) {
+        return 0;
+    }
+    if (samples > 0 && pcm) {
+        ctx->streaming_buffer.insert(ctx->streaming_buffer.end(), pcm, pcm + samples);
+    }
+
+    const int W = stream_window(ctx);
+    const int H = stream_hop(ctx);
+    if (W <= 0 || H <= 0) {
+        return 0;
+    }
+
+    size_t backlog = stream_backlog(ctx);
+    size_t available_frames = stream_available_frames(ctx);
+    bool forced_flush = false;
+    if (available_frames == 0 && backlog > 0 && flush_mode == FFT_STREAM_FLUSH_FINAL) {
+        available_frames = 1;
+        forced_flush = true;
+    }
+    if (available_frames == 0) {
+        return 0;
+    }
+
+    size_t frames = available_frames;
+    if (max_frames != 0 && frames > max_frames) {
+        frames = max_frames;
+    }
+
+    size_t pcm_len = forced_flush ? static_cast<size_t>(W)
+        : static_cast<size_t>(W) + (frames - 1) * static_cast<size_t>(H);
+    if (!forced_flush && pcm_len > backlog) {
+        pcm_len = backlog;
+    }
+
+    std::vector<float> chunk(pcm_len, 0.0f);
+    std::vector<float> *analysis_win = ctx->windows_enabled && !ctx->analysis_win.empty()
+        ? &ctx->analysis_win
+        : nullptr;
+
+    for (size_t frame_idx = 0; frame_idx < frames; ++frame_idx) {
+        size_t frame_start = frame_idx * static_cast<size_t>(H);
+        size_t source_start = ctx->streaming_offset + frame_start;
+        for (int wi = 0; wi < W; ++wi) {
+            size_t chunk_idx = frame_start + static_cast<size_t>(wi);
+            if (chunk_idx >= chunk.size()) {
+                break;
+            }
+            float sample = 0.0f;
+            if (source_start + static_cast<size_t>(wi) < ctx->streaming_buffer.size()) {
+                sample = ctx->streaming_buffer[source_start + static_cast<size_t>(wi)];
+            } else if (!forced_flush) {
+                sample = 0.0f;
+            }
+            if (analysis_win && static_cast<size_t>(wi) < analysis_win->size()) {
+                sample *= (*analysis_win)[static_cast<size_t>(wi)];
+            }
+            chunk[chunk_idx] = sample;
+        }
+    }
+
+    const size_t bins = stream_bins(ctx);
+    std::vector<float> local_real(frames * bins, 0.0f);
+    std::vector<float> local_imag(frames * bins, 0.0f);
+    std::vector<float> local_mag(frames * bins, 0.0f);
+    float* real_target = out_real ? out_real : local_real.data();
+    float* imag_target = out_imag ? out_imag : local_imag.data();
+    float* mag_target = out_mag ? out_mag : local_mag.data();
+
+    const int pad_mode = forced_flush ? 1 : 2;
+    size_t produced = fft_execute_batched(handle, chunk.data(), pcm_len, real_target, imag_target, mag_target, pad_mode, 0, frames);
+    if (produced == 0) {
+        return 0;
+    }
+
+    if (out_real && real_target != out_real) {
+        std::copy(real_target, real_target + produced * bins, out_real);
+    }
+    if (out_imag && imag_target != out_imag) {
+        std::copy(imag_target, imag_target + produced * bins, out_imag);
+    }
+
+    if (forced_flush) {
+        ctx->streaming_buffer.clear();
+        ctx->streaming_offset = 0;
+        return produced;
+    }
+
+    ctx->streaming_offset += produced * static_cast<size_t>(H);
+    stream_compact(ctx);
+    return produced;
+}
+
+size_t fft_stream_push_spectrum(void* handle,
+                                const float* in_real,
+                                const float* in_imag,
+                                size_t frames,
+                                float* out_pcm,
+                                size_t max_samples,
+                                int flush_mode) {
+    if (!handle) {
+        return 0;
+    }
+    FftContext* ctx = static_cast<FftContext*>(handle);
+    if (!ctx->streaming_enabled || !ctx->inverse) {
+        return 0;
+    }
+
+    const size_t plan_n = static_cast<size_t>(std::max(ctx->N, 1));
+    const size_t bins = stream_bins(ctx);
+
+    if (ctx->streaming_inverse_accum.size() != plan_n) {
+        ctx->streaming_inverse_accum.assign(plan_n, 0.0f);
+    }
+    const bool use_norm = (ctx->cola_mode == FFT_COLA_NORMALIZE);
+    if (use_norm) {
+        if (ctx->streaming_inverse_norm.size() != plan_n) {
+            ctx->streaming_inverse_norm.assign(plan_n, 0.0f);
+        }
+    } else {
+        ctx->streaming_inverse_norm.clear();
+    }
+
+    if (frames > 0) {
+        if (!in_real) {
+            return stream_inverse_emit(ctx, out_pcm, max_samples);
+        }
+        const size_t total_bins = frames * bins;
+        std::vector<float> tmp_real(total_bins, 0.0f);
+        if (total_bins > 0) {
+            std::copy_n(in_real, total_bins, tmp_real.begin());
+        }
+        std::vector<float> tmp_imag;
+        const float* imag_ptr = nullptr;
+        if (in_imag) {
+            tmp_imag.assign(total_bins, 0.0f);
+            if (total_bins > 0) {
+                std::copy_n(in_imag, total_bins, tmp_imag.begin());
+            }
+            imag_ptr = tmp_imag.empty() ? nullptr : tmp_imag.data();
+        }
+
+        std::vector<float> frame_pcm(frames * plan_n, 0.0f);
+        size_t produced = fft_execute_complex_batched(
+            handle,
+            tmp_real.data(),
+            imag_ptr,
+            frames,
+            frame_pcm.data(),
+            2,
+            0,
+            frames);
+        if (produced == 0) {
+            return stream_inverse_emit(ctx, out_pcm, max_samples);
+        }
+        if (produced > frames) {
+            produced = frames;
+        }
+
+        const int hop_samples = std::max(stream_hop(ctx), 1);
+        const size_t hop = static_cast<size_t>(hop_samples);
+        const size_t window_len = ctx->synthesis_win.size();
+
+        for (size_t f = 0; f < produced; ++f) {
+            const float* frame = frame_pcm.data() + f * plan_n;
+            for (size_t i = 0; i < plan_n; ++i) {
+                ctx->streaming_inverse_accum[i] += frame[i];
+                if (use_norm) {
+                    float weight = 1.0f;
+                    if (ctx->windows_enabled && window_len > i) {
+                        weight = ctx->synthesis_win[i];
+                        ctx->streaming_inverse_norm[i] += weight * weight;
+                    } else {
+                        ctx->streaming_inverse_norm[i] += 1.0f;
+                    }
+                }
+            }
+
+            size_t emit = hop;
+            if (flush_mode == FFT_STREAM_FLUSH_FINAL && (f + 1 == produced)) {
+                emit = plan_n;
+            }
+            if (emit > plan_n) {
+                emit = plan_n;
+            }
+
+            for (size_t i = 0; i < emit; ++i) {
+                float sample = ctx->streaming_inverse_accum[i];
+                if (use_norm) {
+                    float denom = ctx->streaming_inverse_norm[i];
+                    if (std::fabs(denom) > 1e-12f) {
+                        sample /= denom;
+                    }
+                }
+                stream_inverse_queue_sample(ctx, sample);
+            }
+
+            if (emit < plan_n) {
+                std::move(ctx->streaming_inverse_accum.begin() + emit,
+                          ctx->streaming_inverse_accum.end(),
+                          ctx->streaming_inverse_accum.begin());
+                std::fill(ctx->streaming_inverse_accum.end() - emit,
+                          ctx->streaming_inverse_accum.end(),
+                          0.0f);
+                if (use_norm) {
+                    std::move(ctx->streaming_inverse_norm.begin() + emit,
+                              ctx->streaming_inverse_norm.end(),
+                              ctx->streaming_inverse_norm.begin());
+                    std::fill(ctx->streaming_inverse_norm.end() - emit,
+                              ctx->streaming_inverse_norm.end(),
+                              0.0f);
+                }
+            } else {
+                std::fill(ctx->streaming_inverse_accum.begin(),
+                          ctx->streaming_inverse_accum.end(),
+                          0.0f);
+                if (use_norm) {
+                    std::fill(ctx->streaming_inverse_norm.begin(),
+                              ctx->streaming_inverse_norm.end(),
+                              0.0f);
+                }
+            }
+        }
+    }
+
+    if (flush_mode == FFT_STREAM_FLUSH_FINAL && frames == 0) {
+        if (!ctx->streaming_inverse_accum.empty()) {
+            const bool use_norm_local = !ctx->streaming_inverse_norm.empty();
+            for (size_t i = 0; i < ctx->streaming_inverse_accum.size(); ++i) {
+                float sample = ctx->streaming_inverse_accum[i];
+                if (use_norm_local) {
+                    float denom = ctx->streaming_inverse_norm[i];
+                    if (std::fabs(denom) > 1e-12f) {
+                        sample /= denom;
+                    }
+                }
+                stream_inverse_queue_sample(ctx, sample);
+            }
+            std::fill(ctx->streaming_inverse_accum.begin(), ctx->streaming_inverse_accum.end(), 0.0f);
+            if (use_norm_local) {
+                std::fill(ctx->streaming_inverse_norm.begin(), ctx->streaming_inverse_norm.end(), 0.0f);
+            }
+        }
+    }
+
+    return stream_inverse_emit(ctx, out_pcm, max_samples);
+}
+
 size_t fft_ctx_size(void* handle) {
     if (!handle) return 0;
     FftContext* ctx = static_cast<FftContext*>(handle);
@@ -1451,6 +1892,13 @@ void* fft_init_full_v2(size_t n,
         ctx->window = window;
         ctx->hop = hop;
         ctx->stft_mode = stft_mode;
+    ctx->streaming_enabled = (stft_mode == 2);
+    ctx->streaming_buffer.clear();
+    ctx->streaming_offset = 0;
+    ctx->streaming_inverse_queue.clear();
+    ctx->streaming_inverse_offset = 0;
+    ctx->streaming_inverse_accum.clear();
+    ctx->streaming_inverse_norm.clear();
         ctx->transform = transform;
         ctx->reduce_magnitude = reduce_magnitude;
         ctx->store_polar = store_polar;

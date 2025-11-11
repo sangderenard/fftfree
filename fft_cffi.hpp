@@ -177,6 +177,41 @@ extern "C" {
                                            int enable_backup,
                                            size_t max_frames);
 
+    // Convenience alias to run an STFT using the context's configured window/hop.
+    // Internally this forwards to `fft_execute_batched` with default padding at the final frame.
+    FFT_CFFI_API size_t fft_stft_execute(void* handle,
+                                         const float* pcm,
+                                         size_t pcm_len,
+                                         float* out_real,
+                                         float* out_imag,
+                                         float* out_mag,
+                                         size_t max_frames);
+
+    // Streaming STFT helpers. When a context is created with stft_mode==2, callers
+    // may feed PCM incrementally via `fft_stream_push_pcm`. The implementation
+    // maintains a sliding buffer so each call produces the next hop-aligned frames.
+    // `fft_stream_pending_frames` reports how many ready frames can be produced,
+    // and `fft_stream_backlog_samples` reports how many PCM samples are retained.
+    FFT_CFFI_API void fft_stream_reset(void* handle);
+    FFT_CFFI_API size_t fft_stream_push_pcm(void* handle,
+                                            const float* pcm,
+                                            size_t samples,
+                                            float* out_real,
+                                            float* out_imag,
+                                            float* out_mag,
+                                            size_t max_frames,
+                                            int flush_mode);
+    FFT_CFFI_API size_t fft_stream_pending_frames(void* handle);
+    FFT_CFFI_API size_t fft_stream_backlog_samples(void* handle);
+    FFT_CFFI_API size_t fft_stream_push_spectrum(void* handle,
+                                                const float* in_real,
+                                                const float* in_imag,
+                                                size_t frames,
+                                                float* out_pcm,
+                                                size_t max_samples,
+                                                int flush_mode);
+    FFT_CFFI_API size_t fft_stream_pending_pcm(void* handle);
+
         FFT_CFFI_API int fft_griffin_lim(void* ctx_forward,
                                          void* ctx_inverse,
                                          const float* in_mag,
@@ -277,6 +312,13 @@ enum {
 enum {
     FFT_COLA_OFF = 0,
     FFT_COLA_NORMALIZE = 1
+};
+
+// Streaming flush modes for `fft_stream_push_pcm`.
+enum {
+    FFT_STREAM_FLUSH_NONE = 0,
+    FFT_STREAM_FLUSH_PARTIAL = 1,
+    FFT_STREAM_FLUSH_FINAL = 2
 };
 
 extern "C" {

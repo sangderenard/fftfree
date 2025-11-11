@@ -440,6 +440,188 @@ bool test_streaming_stft_vs_eigen(const std::vector<float>& pcm,
   return ok;
 }
 
+bool test_streaming_inverse_roundtrip() {
+  constexpr int N = 64;
+  constexpr int W = 64;
+  constexpr int H = 16;
+  const std::size_t total_samples = static_cast<std::size_t>(W + 2 * H);
+
+  std::vector<float> pcm(total_samples, 0.0f);
+  constexpr float kPi = 3.14159265358979323846f;
+  for (std::size_t i = 0; i < pcm.size(); ++i) {
+    const float phase = static_cast<float>(i) * 2.0f * kPi / 57.0f;
+    pcm[i] = std::sin(phase) + 0.25f * std::cos(phase * 0.5f);
+  }
+
+  void* forward = fft_init_full_v2(
+      static_cast<std::size_t>(N),
+      0,
+      1,
+      0,
+      FFT_KERNEL_COOLEYTUKEY,
+      0,
+      nullptr,
+      0,
+      2,
+      W,
+      H,
+      2,
+      FFT_TRANSFORM_C2C,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      FFT_WINDOW_RECT,
+      0.0f,
+      0.0f,
+      FFT_WINDOW_RECT,
+      0.0f,
+      0.0f,
+      FFT_WINDOW_NORM_NONE,
+  FFT_COLA_NORMALIZE);
+  if (!forward) {
+    std::cerr << "streaming inverse: failed to initialize forward context" << std::endl;
+    return false;
+  }
+
+  void* inverse = fft_init_full_v2(
+      static_cast<std::size_t>(N),
+      0,
+      1,
+      1,
+      FFT_KERNEL_COOLEYTUKEY,
+      0,
+      nullptr,
+      0,
+      2,
+      W,
+      H,
+      2,
+      FFT_TRANSFORM_C2C,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      FFT_WINDOW_RECT,
+      0.0f,
+      0.0f,
+      FFT_WINDOW_RECT,
+      0.0f,
+      0.0f,
+      FFT_WINDOW_NORM_NONE,
+  FFT_COLA_NORMALIZE);
+  if (!inverse) {
+    std::cerr << "streaming inverse: failed to initialize inverse context" << std::endl;
+    fft_free(forward);
+    return false;
+  }
+
+  std::vector<float> spec_real;
+  std::vector<float> spec_imag;
+  auto capture_frames = [&](std::size_t start, std::size_t count, int flush_mode) {
+    const std::size_t max_frames = 8;
+    std::vector<float> out_real(max_frames * static_cast<std::size_t>(N), 0.0f);
+    std::vector<float> out_imag(max_frames * static_cast<std::size_t>(N), 0.0f);
+    const size_t produced = fft_stream_push_pcm(
+        forward,
+        pcm.data() + start,
+        count,
+        out_real.data(),
+        out_imag.data(),
+        nullptr,
+        max_frames,
+        flush_mode);
+    for (size_t f = 0; f < produced; ++f) {
+      const float* r = out_real.data() + f * static_cast<std::size_t>(N);
+      const float* im = out_imag.data() + f * static_cast<std::size_t>(N);
+      spec_real.insert(spec_real.end(), r, r + N);
+      spec_imag.insert(spec_imag.end(), im, im + N);
+    }
+  };
+
+  const std::size_t chunk1 = 20;
+  const std::size_t chunk2 = 30;
+  capture_frames(0, chunk1, FFT_STREAM_FLUSH_NONE);
+  capture_frames(chunk1, chunk2, FFT_STREAM_FLUSH_NONE);
+  capture_frames(chunk1 + chunk2, pcm.size() - chunk1 - chunk2, FFT_STREAM_FLUSH_FINAL);
+
+  const size_t frames_total = spec_real.empty() ? 0 : spec_real.size() / static_cast<std::size_t>(N);
+  if (frames_total == 0) {
+    std::cerr << "streaming inverse: no frames captured" << std::endl;
+    fft_free(forward);
+    fft_free(inverse);
+    return false;
+  }
+
+  std::vector<float> reconstructed;
+  std::vector<float> chunk_out(static_cast<std::size_t>(N), 0.0f);
+  size_t frame_idx = 0;
+  while (frame_idx < frames_total) {
+    const size_t send = 1;
+    const int flush = (frame_idx + send == frames_total) ? FFT_STREAM_FLUSH_FINAL : FFT_STREAM_FLUSH_NONE;
+    const size_t produced = fft_stream_push_spectrum(
+        inverse,
+        spec_real.data() + frame_idx * static_cast<std::size_t>(N),
+        spec_imag.data() + frame_idx * static_cast<std::size_t>(N),
+        send,
+        chunk_out.data(),
+        static_cast<std::size_t>(N),
+        flush);
+    if (produced > 0) {
+      reconstructed.insert(reconstructed.end(), chunk_out.begin(), chunk_out.begin() + produced);
+    }
+    frame_idx += send;
+  }
+
+  if (fft_stream_pending_pcm(inverse) != 0) {
+    std::vector<float> tail(static_cast<std::size_t>(N), 0.0f);
+    const size_t drained = fft_stream_push_spectrum(
+        inverse,
+        nullptr,
+        nullptr,
+        0,
+        tail.data(),
+        static_cast<std::size_t>(N),
+        FFT_STREAM_FLUSH_NONE);
+    if (drained > 0) {
+      reconstructed.insert(reconstructed.end(), tail.begin(), tail.begin() + drained);
+    }
+  }
+
+  bool ok = true;
+  if (reconstructed.size() != pcm.size()) {
+    std::cerr << "streaming inverse: length mismatch (expected " << pcm.size()
+              << ", got " << reconstructed.size() << ")" << std::endl;
+    ok = false;
+  } else {
+    double max_err = 0.0;
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+      max_err = std::max(max_err, static_cast<double>(std::fabs(pcm[i] - reconstructed[i])));
+    }
+    std::cout << "Streaming inverse max abs error=" << max_err << '\n';
+    if (max_err > 1e-4) {
+      std::cerr << "streaming inverse: reconstruction error exceeds tolerance" << std::endl;
+      ok = false;
+    }
+  }
+
+  fft_free(forward);
+  fft_free(inverse);
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -462,6 +644,10 @@ int main() {
     }
   } else {
     std::cerr << "Skipping streaming STFT test due to missing reference" << '\n';
+    ok = false;
+  }
+
+  if (!test_streaming_inverse_roundtrip()) {
     ok = false;
   }
 
