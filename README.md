@@ -76,3 +76,17 @@ Notes
 - No OpenMP is used in the core. All concurrency comes from the outer WorkerPool.
 - Kernels are written to be safe when run under a dispatcher or inline.
 
+Packaging
+---------
+
+To create a distributable source tarball that other CMake projects can consume via
+`FetchContent` or `find_package`, configure the project and invoke the
+`package_source` target:
+
+```
+cmake -S . -B build
+cmake --build build --target package_source
+```
+
+This produces a `fftfree-0.1.0-source.tar.gz` archive in the build directory.
+
