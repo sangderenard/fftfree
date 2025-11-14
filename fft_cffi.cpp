@@ -50,7 +50,6 @@ struct FftContext {
     // STFT/windowing settings
     int window = 0;   // analysis window (W). 0 => use plan N
     int hop = 0;      // hop/stride between windows. 0 => window
-    int stft_mode = 0; // 0=disabled,1=batched helper,2=streaming (reserved)
     // Transform/output shape
     int transform = 0;        // 0=C2C,1=R2C,2=C2R,3=R2R
     int reduce_magnitude = 0; // bool-like
@@ -70,8 +69,7 @@ struct FftContext {
     std::vector<float> synthesis_win;  // length = window
     bool windows_enabled = false;      // Whether to apply windows internally (default off)
     int apply_ola = 0;                 // Whether to perform OLA internally in inverse
-    // Streaming state (stft_mode==2)
-    bool streaming_enabled = false;
+    // Streaming state (always enabled)
     std::vector<float> streaming_buffer;
     size_t streaming_offset = 0;
     std::vector<float> streaming_inverse_queue;
@@ -517,11 +515,11 @@ static inline size_t next_power_of_two(size_t v) {
 }
 
 void* fft_init(size_t n, int threads, int lanes, int inverse, int kernel, int radix, const int* radix_pattern, size_t radix_pattern_len, int pad_mode) {
-    // legacy init forwards to extended initializer with default window/hop/mode
-    return fft_init_ex(n, threads, lanes, inverse, kernel, radix, radix_pattern, radix_pattern_len, pad_mode, 0, 0, 0);
+    // legacy init forwards to extended initializer with default window/hop
+    return fft_init_ex(n, threads, lanes, inverse, kernel, radix, radix_pattern, radix_pattern_len, pad_mode, 0, 0);
 }
 
-void* fft_init_ex(size_t n, int threads, int lanes, int inverse, int kernel, int radix, const int* radix_pattern, size_t radix_pattern_len, int pad_mode, int window, int hop, int stft_mode) {
+void* fft_init_ex(size_t n, int threads, int lanes, int inverse, int kernel, int radix, const int* radix_pattern, size_t radix_pattern_len, int pad_mode, int window, int hop) {
     try {
     // Legacy initializer: do NOT install the crash handler automatically here.
     // Prefer callers use `fft_init_full(...)` to configure runtime crash
@@ -544,8 +542,6 @@ void* fft_init_ex(size_t n, int threads, int lanes, int inverse, int kernel, int
         ctx->pad_mode = pad_mode;
         ctx->window = window;
         ctx->hop = hop;
-        ctx->stft_mode = stft_mode;
-        ctx->streaming_enabled = (stft_mode == 2);
         ctx->streaming_buffer.clear();
         ctx->streaming_offset = 0;
         // copy supplied radix pattern (if any)
@@ -1354,9 +1350,6 @@ inline int stream_hop(const FftContext* ctx) {
 }
 
 inline size_t stream_backlog(const FftContext* ctx) {
-    if (!ctx->streaming_enabled) {
-        return 0;
-    }
     if (ctx->streaming_offset >= ctx->streaming_buffer.size()) {
         return 0;
     }
@@ -1498,7 +1491,7 @@ size_t fft_stream_pending_pcm(void* handle) {
         return 0;
     }
     FftContext* ctx = static_cast<FftContext*>(handle);
-    if (!ctx->streaming_enabled || !ctx->inverse) {
+    if (!ctx->inverse) {
         return 0;
     }
     return stream_inverse_pending(ctx);
@@ -1513,30 +1506,34 @@ size_t fft_stream_push_pcm(void* handle,
                            size_t max_frames,
                            int flush_mode) {
     if (!handle) {
+        fprintf(stderr, "[fft_stream_push_pcm] handle is NULL\n");
         return 0;
     }
     FftContext* ctx = static_cast<FftContext*>(handle);
-    if (!ctx->streaming_enabled) {
-        return 0;
-    }
     if (samples > 0 && pcm) {
         ctx->streaming_buffer.insert(ctx->streaming_buffer.end(), pcm, pcm + samples);
     }
 
     const int W = stream_window(ctx);
     const int H = stream_hop(ctx);
+    fprintf(stderr, "[fft_stream_push_pcm] samples=%zu W=%d H=%d offset=%zu buf_size=%zu\n", 
+            samples, W, H, ctx->streaming_offset, ctx->streaming_buffer.size());
     if (W <= 0 || H <= 0) {
+        fprintf(stderr, "[fft_stream_push_pcm] EARLY RETURN: W or H invalid\n");
         return 0;
     }
 
     size_t backlog = stream_backlog(ctx);
     size_t available_frames = stream_available_frames(ctx);
+    fprintf(stderr, "[fft_stream_push_pcm] backlog=%zu available_frames=%zu flush_mode=%d max_frames=%zu\n", 
+            backlog, available_frames, flush_mode, max_frames);
     bool forced_flush = false;
     if (available_frames == 0 && backlog > 0 && flush_mode == FFT_STREAM_FLUSH_FINAL) {
         available_frames = 1;
         forced_flush = true;
     }
     if (available_frames == 0) {
+        fprintf(stderr, "[fft_stream_push_pcm] EARLY RETURN: no available frames (need %d samples for first frame)\n", W);
         return 0;
     }
 
@@ -1620,7 +1617,7 @@ size_t fft_stream_push_spectrum(void* handle,
         return 0;
     }
     FftContext* ctx = static_cast<FftContext*>(handle);
-    if (!ctx->streaming_enabled || !ctx->inverse) {
+    if (!ctx->inverse) {
         return 0;
     }
 
@@ -1823,7 +1820,6 @@ void* fft_init_full(size_t n,
                     int pad_mode,
                     int window,
                     int hop,
-                    int stft_mode,
                     int transform,
                     int reduce_magnitude,
                     int store_polar,
@@ -1835,7 +1831,7 @@ void* fft_init_full(size_t n,
                     int silent_crash_reports) {
     return fft_init_full_v2(n, threads, lanes, inverse, kernel, radix,
                             radix_pattern, radix_pattern_len, pad_mode,
-                            window, hop, stft_mode, transform,
+                            window, hop, transform,
                             reduce_magnitude, store_polar, half_spectrum,
                             allow_outer_parallel, allow_inner_parallel,
                             inner_threads, save_crash_logs, silent_crash_reports,
@@ -1856,7 +1852,6 @@ void* fft_init_full_v2(size_t n,
                     int pad_mode,
                     int window,
                     int hop,
-                    int stft_mode,
                     int transform,
                     int reduce_magnitude,
                     int store_polar,
@@ -1891,8 +1886,6 @@ void* fft_init_full_v2(size_t n,
         ctx->pad_mode = pad_mode;
         ctx->window = window;
         ctx->hop = hop;
-        ctx->stft_mode = stft_mode;
-    ctx->streaming_enabled = (stft_mode == 2);
     ctx->streaming_buffer.clear();
     ctx->streaming_offset = 0;
     ctx->streaming_inverse_queue.clear();

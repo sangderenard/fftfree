@@ -92,8 +92,8 @@ extern "C" {
     // Extended initializer (STFT-aware). Parameters:
     //  - window: analysis window size (W). If 0, defaults to plan N (no extra subwindowing).
     //  - hop: hop/stride in samples between windows. If 0, defaults to window.
-    //  - stft_mode: 0=disabled (legacy), 1=batched STFT helper enabled, 2=streaming mode (reserved)
-    FFT_CFFI_API void* fft_init_ex(size_t n, int threads, int lanes, int inverse, int kernel, int radix, const int* radix_pattern, size_t radix_pattern_len, int pad_mode, int window, int hop, int stft_mode);
+    // Note: Streaming mode is now always enabled.
+    FFT_CFFI_API void* fft_init_ex(size_t n, int threads, int lanes, int inverse, int kernel, int radix, const int* radix_pattern, size_t radix_pattern_len, int pad_mode, int window, int hop);
 
     // Full initializer (original signature, kept for ABI compatibility)
     FFT_CFFI_API void* fft_init_full(size_t n,
@@ -107,7 +107,6 @@ extern "C" {
                                      int pad_mode,
                                      int window,
                                      int hop,
-                                     int stft_mode,
                                      int transform,
                                      int reduce_magnitude,
                                      int store_polar,
@@ -130,7 +129,6 @@ extern "C" {
                                         int pad_mode,
                                         int window,
                                         int hop,
-                                        int stft_mode,
                                         int transform,
                                         int reduce_magnitude,
                                         int store_polar,
@@ -187,8 +185,8 @@ extern "C" {
                                          float* out_mag,
                                          size_t max_frames);
 
-    // Streaming STFT helpers. When a context is created with stft_mode==2, callers
-    // may feed PCM incrementally via `fft_stream_push_pcm`. The implementation
+    // Streaming STFT helpers. Streaming is now always enabled for all contexts.
+    // Callers may feed PCM incrementally via `fft_stream_push_pcm`. The implementation
     // maintains a sliding buffer so each call produces the next hop-aligned frames.
     // `fft_stream_pending_frames` reports how many ready frames can be produced,
     // and `fft_stream_backlog_samples` reports how many PCM samples are retained.

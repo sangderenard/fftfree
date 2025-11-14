@@ -130,7 +130,6 @@ int main(int argc, char** argv) {
         1,               // pad_mode: pad last frame if needed
         N,               // window = N
         N,               // hop = N
-        1,               // stft_mode = batched
         transform,       // transform
         0,               // reduce_magnitude
         0,               // store_polar
