@@ -18,7 +18,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDeb
 endif()
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.14)  # FetchContent requires 3.11+, but 3.14 for better support
-project(fftfree)
+project(fftfree VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -118,6 +118,8 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDeb
     message(WARNING "LTO not supported: ${lto_output}")
   endif()
 endif()
+
+include(GNUInstallDirs)
 
 include(CTest)
 enable_testing()
@@ -253,8 +255,15 @@ endfunction()
 
 
 add_library(fft_cffi SHARED fft_cffi.cpp ft_tools_cffi.cpp ft_tools_cffi.hpp ft_tools.hpp eigen_fft.hpp plan_support.hpp phase_infer.hpp butterfly/butterfly_base.hpp butterfly/butterfly_factory.hpp butterfly/butterfly_radix2_dit.hpp butterfly/butterfly_radix2_dif.hpp butterfly/butterfly_radix4_dit.hpp)
+add_library(fftfree::fft_cffi ALIAS fft_cffi)
 fftfree_apply_target_options(fft_cffi)
 target_compile_definitions(fft_cffi PRIVATE FFT_CFFI_EXPORTS)
+target_include_directories(
+  fft_cffi
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
 
 add_executable(fft_example main.cpp)
 fftfree_apply_target_options(fft_example)
@@ -286,3 +295,96 @@ add_executable(cffi_stft_compare_test tests/cffi_stft_compare_test.cpp)
 fftfree_apply_target_options(cffi_stft_compare_test)
 target_link_libraries(cffi_stft_compare_test PRIVATE fft_cffi)
 add_test(NAME fftfree.cffi_stft_compare COMMAND cffi_stft_compare_test)
+
+set(_fftfree_root_headers
+  butterfly_api.hpp
+  butterfly_kernel.hpp
+  crash_handler.hpp
+  eigen_fft.hpp
+  fft_cffi.hpp
+  fft_runtime_api.hpp
+  fftfree.hpp
+  ft_tools.hpp
+  ft_tools_cffi.hpp
+  phase_infer.hpp
+  plan_support.hpp
+  recovery_ops.hpp
+)
+
+set(_fftfree_header_dirs
+  butterfly
+)
+
+install(
+  TARGETS fft_cffi
+  EXPORT fftfreeTargets
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(
+  FILES ${_fftfree_root_headers}
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+foreach(_fftfree_header_dir IN LISTS _fftfree_header_dirs)
+  install(
+    DIRECTORY ${_fftfree_header_dir}
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    FILES_MATCHING PATTERN "*.hpp"
+  )
+endforeach()
+
+include(CMakePackageConfigHelpers)
+
+set(FFTFREE_CONFIG_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/fftfree)
+
+install(
+  EXPORT fftfreeTargets
+  NAMESPACE fftfree::
+  DESTINATION ${FFTFREE_CONFIG_INSTALL_DIR}
+)
+
+export(
+  EXPORT fftfreeTargets
+  NAMESPACE fftfree::
+  FILE "${CMAKE_CURRENT_BINARY_DIR}/fftfreeTargets.cmake"
+)
+
+configure_package_config_file(
+  cmake/fftfreeConfig.cmake.in
+  "${CMAKE_CURRENT_BINARY_DIR}/fftfreeConfig.cmake"
+  INSTALL_DESTINATION ${FFTFREE_CONFIG_INSTALL_DIR}
+)
+
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/fftfreeConfigVersion.cmake"
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion
+)
+
+install(
+  FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/fftfreeConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/fftfreeConfigVersion.cmake"
+  DESTINATION ${FFTFREE_CONFIG_INSTALL_DIR}
+)
+
+set(CPACK_PACKAGE_NAME "fftfree")
+set(CPACK_PACKAGE_VENDOR "fftfree")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}-${PROJECT_VERSION}")
+set(CPACK_GENERATOR "TGZ")
+set(CPACK_SOURCE_GENERATOR "TGZ")
+set(CPACK_SOURCE_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}-${PROJECT_VERSION}-source")
+set(CPACK_SOURCE_IGNORE_FILES
+  "/build/"
+  "/\\\\.git/"
+  "/\\\\.github/"
+  "/\\\\.cache/"
+  "~$"
+)
+
+include(CPack)
