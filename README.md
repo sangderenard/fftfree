@@ -88,5 +88,5 @@ cmake -S . -B build
 cmake --build build --target package_source
 ```
 
-This produces a `fftfree-0.1.0-source.tar.gz` archive in the build directory.
+This produces a `fftfree-0.1.1-source.tar.gz` archive in the build directory.
 

@@ -18,7 +18,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDeb
 endif()
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.14)  # FetchContent requires 3.11+, but 3.14 for better support
-project(fftfree VERSION 0.1.0)
+project(fftfree VERSION 0.1.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
