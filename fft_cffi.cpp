@@ -207,6 +207,24 @@ static std::vector<float> build_window(int kind, int W, float p1, float p2) {
     return w;
 }
 
+static float cola_window_weight(const FftContext* ctx, size_t index) {
+    if (!ctx) {
+        return 1.0f;
+    }
+    if (ctx->windows_enabled) {
+        float analysis = 1.0f;
+        if (!ctx->analysis_win.empty() && index < ctx->analysis_win.size()) {
+            analysis = ctx->analysis_win[index];
+        }
+        float synthesis = 1.0f;
+        if (!ctx->synthesis_win.empty() && index < ctx->synthesis_win.size()) {
+            synthesis = ctx->synthesis_win[index];
+        }
+        return analysis * synthesis;
+    }
+    return 1.0f;
+}
+
 static eigfft::PlanRuntimeConfig compute_effective_runtime(const FftContext& ctx) {
     eigfft::PlanRuntimeConfig cfg = ctx.cfg;
     int outer_threads = (ctx.cfg.threads > 0) ? ctx.cfg.threads : 1;
@@ -1116,12 +1134,7 @@ size_t fft_execute_complex_batched(void* handle,
                             out_pcm[t] += s;
                             // COLA normalization should accumulate squared window (or product of analysis*synthesis).
                             if (!norm.empty()) {
-                                if (ctx->windows_enabled && !ctx->synthesis_win.empty()) {
-                                    float w = ctx->synthesis_win[i];
-                                    norm[t] += w * w;
-                                } else {
-                                    norm[t] += 1.0f;
-                                }
+                                norm[t] += cola_window_weight(ctx, i);
                             }
                         }
                     }
@@ -1295,12 +1308,7 @@ size_t fft_execute_complex_batched(void* handle,
                         if (t < max_len) {
                             out_pcm[t] += s;
                             if (!norm.empty()) {
-                                if (ctx->windows_enabled && !ctx->synthesis_win.empty()) {
-                                    float w = ctx->synthesis_win[i];
-                                    norm[t] += w * w;
-                                } else {
-                                    norm[t] += 1.0f;
-                                }
+                                norm[t] += cola_window_weight(ctx, i);
                             }
                         }
                     }
@@ -1549,9 +1557,6 @@ size_t fft_stream_push_pcm(void* handle,
     }
 
     std::vector<float> chunk(pcm_len, 0.0f);
-    std::vector<float> *analysis_win = ctx->windows_enabled && !ctx->analysis_win.empty()
-        ? &ctx->analysis_win
-        : nullptr;
 
     for (size_t frame_idx = 0; frame_idx < frames; ++frame_idx) {
         size_t frame_start = frame_idx * static_cast<size_t>(H);
@@ -1566,9 +1571,6 @@ size_t fft_stream_push_pcm(void* handle,
                 sample = ctx->streaming_buffer[source_start + static_cast<size_t>(wi)];
             } else if (!forced_flush) {
                 sample = 0.0f;
-            }
-            if (analysis_win && static_cast<size_t>(wi) < analysis_win->size()) {
-                sample *= (*analysis_win)[static_cast<size_t>(wi)];
             }
             chunk[chunk_idx] = sample;
         }
@@ -1674,20 +1676,12 @@ size_t fft_stream_push_spectrum(void* handle,
 
         const int hop_samples = std::max(stream_hop(ctx), 1);
         const size_t hop = static_cast<size_t>(hop_samples);
-        const size_t window_len = ctx->synthesis_win.size();
-
         for (size_t f = 0; f < produced; ++f) {
             const float* frame = frame_pcm.data() + f * plan_n;
             for (size_t i = 0; i < plan_n; ++i) {
                 ctx->streaming_inverse_accum[i] += frame[i];
                 if (use_norm) {
-                    float weight = 1.0f;
-                    if (ctx->windows_enabled && window_len > i) {
-                        weight = ctx->synthesis_win[i];
-                        ctx->streaming_inverse_norm[i] += weight * weight;
-                    } else {
-                        ctx->streaming_inverse_norm[i] += 1.0f;
-                    }
+                    ctx->streaming_inverse_norm[i] += cola_window_weight(ctx, i);
                 }
             }
 
