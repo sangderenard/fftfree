@@ -66,7 +66,7 @@ void run_cffi_recovery_demo(int thread_hint) {
     }
   } dropout_guard;
 
-  void* forward = fft_init_full(
+    void* forward = fft_init_full_v2(
       static_cast<std::size_t>(N),
       threads,
       1,
@@ -78,7 +78,6 @@ void run_cffi_recovery_demo(int thread_hint) {
       1,
       N,
       hop,
-      1,
       FFT_TRANSFORM_R2C,
       0,
       0,
@@ -87,7 +86,17 @@ void run_cffi_recovery_demo(int thread_hint) {
       0,
       0,
       0,
-      1);
+      1,
+      /*apply_windows*/0,
+      /*apply_ola*/0,
+      /*analysis_window_kind*/FFT_WINDOW_RECT,
+      /*analysis_param1*/0.0f,
+      /*analysis_param2*/0.0f,
+      /*synthesis_window_kind*/FFT_WINDOW_RECT,
+      /*synthesis_param1*/0.0f,
+      /*synthesis_param2*/0.0f,
+      /*window_norm_policy*/FFT_WINDOW_NORM_NONE,
+      /*cola_mode*/FFT_COLA_OFF);
   if (!forward) {
     throw std::runtime_error("fft_example: fft_init_full (forward) failed");
   }
@@ -129,7 +138,7 @@ void run_cffi_recovery_demo(int thread_hint) {
                  "adjust dropout pattern if diagnostics required." << std::endl;
   }
 
-  void* inverse = fft_init_full(
+    void* inverse = fft_init_full_v2(
       static_cast<std::size_t>(N),
       threads,
       1,
@@ -141,7 +150,6 @@ void run_cffi_recovery_demo(int thread_hint) {
       1,
       N,
       hop,
-      1,
       FFT_TRANSFORM_C2R,
       0,
       0,
@@ -150,7 +158,17 @@ void run_cffi_recovery_demo(int thread_hint) {
       0,
       0,
       0,
-      1);
+      1,
+      /*apply_windows*/0,
+      /*apply_ola*/0,
+      /*analysis_window_kind*/FFT_WINDOW_RECT,
+      /*analysis_param1*/0.0f,
+      /*analysis_param2*/0.0f,
+      /*synthesis_window_kind*/FFT_WINDOW_RECT,
+      /*synthesis_param1*/0.0f,
+      /*synthesis_param2*/0.0f,
+      /*window_norm_policy*/FFT_WINDOW_NORM_NONE,
+      /*cola_mode*/FFT_COLA_OFF);
   if (!inverse) {
     fft_free(forward);
     throw std::runtime_error("fft_example: fft_init_full (inverse) failed");

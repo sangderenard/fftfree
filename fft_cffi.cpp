@@ -1535,11 +1535,6 @@ size_t fft_stream_push_pcm(void* handle,
     size_t available_frames = stream_available_frames(ctx);
     fprintf(stderr, "[fft_stream_push_pcm] backlog=%zu available_frames=%zu flush_mode=%d max_frames=%zu\n", 
             backlog, available_frames, flush_mode, max_frames);
-    bool forced_flush = false;
-    if (available_frames == 0 && backlog > 0 && flush_mode == FFT_STREAM_FLUSH_FINAL) {
-        available_frames = 1;
-        forced_flush = true;
-    }
     if (available_frames == 0) {
         fprintf(stderr, "[fft_stream_push_pcm] EARLY RETURN: no available frames (need %d samples for first frame)\n", W);
         return 0;
@@ -1550,9 +1545,8 @@ size_t fft_stream_push_pcm(void* handle,
         frames = max_frames;
     }
 
-    size_t pcm_len = forced_flush ? static_cast<size_t>(W)
-        : static_cast<size_t>(W) + (frames - 1) * static_cast<size_t>(H);
-    if (!forced_flush && pcm_len > backlog) {
+    size_t pcm_len = static_cast<size_t>(W) + (frames - 1) * static_cast<size_t>(H);
+    if (pcm_len > backlog) {
         pcm_len = backlog;
     }
 
@@ -1569,8 +1563,6 @@ size_t fft_stream_push_pcm(void* handle,
             float sample = 0.0f;
             if (source_start + static_cast<size_t>(wi) < ctx->streaming_buffer.size()) {
                 sample = ctx->streaming_buffer[source_start + static_cast<size_t>(wi)];
-            } else if (!forced_flush) {
-                sample = 0.0f;
             }
             chunk[chunk_idx] = sample;
         }
@@ -1584,7 +1576,7 @@ size_t fft_stream_push_pcm(void* handle,
     float* imag_target = out_imag ? out_imag : local_imag.data();
     float* mag_target = out_mag ? out_mag : local_mag.data();
 
-    const int pad_mode = forced_flush ? 1 : 2;
+    const int pad_mode = 2; // drop partial frames; no forced padding fallback
     size_t produced = fft_execute_batched(handle, chunk.data(), pcm_len, real_target, imag_target, mag_target, pad_mode, 0, frames);
     if (produced == 0) {
         return 0;
@@ -1595,12 +1587,6 @@ size_t fft_stream_push_pcm(void* handle,
     }
     if (out_imag && imag_target != out_imag) {
         std::copy(imag_target, imag_target + produced * bins, out_imag);
-    }
-
-    if (forced_flush) {
-        ctx->streaming_buffer.clear();
-        ctx->streaming_offset = 0;
-        return produced;
     }
 
     ctx->streaming_offset += produced * static_cast<size_t>(H);
