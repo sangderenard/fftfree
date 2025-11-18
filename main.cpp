@@ -18,6 +18,8 @@
 #include <string>
 #include <unordered_set>
 #include <algorithm>
+#include <cmath>
+#include <functional>
 #include <thread>
 #include <vector>
 #include <utility>
