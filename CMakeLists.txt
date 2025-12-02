@@ -49,6 +49,9 @@ set(FFTFREE_CT_FORCE_INLINE_STAGE "-1" CACHE STRING "Specific Cooley-Tukey stage
 option(FFTFREE_CT_FORCE_INLINE_KEEP_DISPATCH "Preserve outer dispatcher when forcing Cooley-Tukey inline" ON)
 option(EIGFFT_DEBUG_PERMUTE "Compile-time permute debug instrumentation (gated)" OFF)
 
+# Allow disabling example programs that are legacy / noisy by default.
+option(FFTFREE_BUILD_EXAMPLES "Build example programs (fft_example)" OFF)
+
 # Detect the highest SIMD level actually supported by the host CPU when AUTO is
 # requested on MSVC.  Using compiler-flag probes alone is insufficient because
 # MSVC accepts "/arch:AVX2" even on CPUs that do not support AVX2, which leads
@@ -265,9 +268,11 @@ target_include_directories(
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-add_executable(fft_example main.cpp)
-fftfree_apply_target_options(fft_example)
-target_link_libraries(fft_example PRIVATE fft_cffi)
+if(FFTFREE_BUILD_EXAMPLES)
+  add_executable(fft_example main.cpp)
+  fftfree_apply_target_options(fft_example)
+  target_link_libraries(fft_example PRIVATE fft_cffi)
+endif()
 
 add_executable(fft_tests tests/fftfree_tests.cpp)
 fftfree_apply_target_options(fft_tests)
