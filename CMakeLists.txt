@@ -329,6 +329,15 @@ install(
   INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
+# Ensure runtime/library outputs for fft_cffi are placed with the top-level
+# project's config-specific binary output directory so tests and executables
+# find the shared library at runtime without manual copying.
+set_target_properties(fft_cffi PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
+)
+
 install(
   FILES ${_fftfree_root_headers}
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
